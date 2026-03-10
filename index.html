@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Video → YouTube</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,600;0,9..40,700;1,9..40,400&family=Outfit:wght@500;600;700&display=swap" rel="stylesheet" />
+    <style>
+      :root {
+        --bg: #0d0d0f;
+        --surface: #16161a;
+        --border: #2a2a2e;
+        --text: #e4e4e7;
+        --muted: #71717a;
+        --accent: #22d3ee;
+        --accent-dim: #0891b2;
+        --success: #4ade80;
+        --danger: #f87171;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background: var(--bg);
+        color: var(--text);
+        font-family: 'DM Sans', system-ui, sans-serif;
+        font-size: 15px;
+        line-height: 1.5;
+      }
+      .app {
+        max-width: 720px;
+        margin: 0 auto;
+        padding: 2rem 1.5rem;
+      }
+      h1 {
+        font-family: 'Outfit', sans-serif;
+        font-weight: 700;
+        font-size: 1.75rem;
+        margin: 0 0 0.5rem;
+        letter-spacing: -0.02em;
+      }
+      .subtitle {
+        color: var(--muted);
+        margin: 0 0 2rem;
+      }
+      label {
+        display: block;
+        font-weight: 600;
+        margin-bottom: 0.5rem;
+        font-size: 0.9rem;
+      }
+      textarea {
+        width: 100%;
+        min-height: 100px;
+        padding: 0.75rem 1rem;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        color: var(--text);
+        font-family: inherit;
+        font-size: 0.95rem;
+        resize: vertical;
+        margin-bottom: 1rem;
+      }
+      textarea::placeholder {
+        color: var(--muted);
+      }
+      textarea:focus {
+        outline: none;
+        border-color: var(--accent);
+        box-shadow: 0 0 0 3px rgba(34, 211, 238, 0.15);
+      }
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.75rem;
+        margin-bottom: 2rem;
+      }
+      button {
+        font-family: 'Outfit', sans-serif;
+        font-weight: 600;
+        font-size: 0.9rem;
+        padding: 0.65rem 1.25rem;
+        border-radius: 8px;
+        border: none;
+        cursor: pointer;
+        transition: transform 0.15s, box-shadow 0.15s;
+      }
+      button:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+      }
+      button:not(:disabled):hover {
+        transform: translateY(-1px);
+      }
+      .btn-primary {
+        background: var(--accent);
+        color: var(--bg);
+      }
+      .btn-primary:hover:not(:disabled) {
+        box-shadow: 0 4px 14px rgba(34, 211, 238, 0.4);
+      }
+      .btn-secondary {
+        background: var(--surface);
+        color: var(--text);
+        border: 1px solid var(--border);
+      }
+      .btn-success {
+        background: var(--success);
+        color: #14532d;
+      }
+      .preview {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        overflow: hidden;
+        margin-bottom: 1.5rem;
+      }
+      .preview img,
+      .preview video {
+        display: block;
+        width: 100%;
+        max-height: 400px;
+        object-fit: contain;
+      }
+      .preview-placeholder {
+        padding: 3rem 2rem;
+        text-align: center;
+        color: var(--muted);
+      }
+      .message {
+        padding: 0.75rem 1rem;
+        border-radius: 8px;
+        margin-bottom: 1rem;
+        font-size: 0.9rem;
+      }
+      .message.error {
+        background: rgba(248, 113, 113, 0.15);
+        color: var(--danger);
+        border: 1px solid rgba(248, 113, 113, 0.3);
+      }
+      .message.success {
+        background: rgba(74, 222, 128, 0.15);
+        color: var(--success);
+        border: 1px solid rgba(74, 222, 128, 0.3);
+      }
+      .message.info {
+        background: rgba(34, 211, 238, 0.1);
+        color: var(--accent);
+        border: 1px solid rgba(34, 211, 238, 0.25);
+      }
+      .youtube-section {
+        margin-top: 2rem;
+        padding-top: 1.5rem;
+        border-top: 1px solid var(--border);
+      }
+      .youtube-section h2 {
+        font-family: 'Outfit', sans-serif;
+        font-size: 1.1rem;
+        margin: 0 0 1rem;
+      }
+      .youtube-status {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.4rem 0.75rem;
+        background: var(--surface);
+        border-radius: 6px;
+        font-size: 0.85rem;
+        margin-bottom: 1rem;
+      }
+      .youtube-status.connected {
+        color: var(--success);
+      }
+      .youtube-status.disconnected {
+        color: var(--muted);
+      }
+      input[type="text"],
+      input[type="number"],
+      select {
+        width: 100%;
+        padding: 0.6rem 0.75rem;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        color: var(--text);
+        font-family: inherit;
+        font-size: 0.9rem;
+        margin-bottom: 0.75rem;
+      }
+      input:focus, select:focus {
+        outline: none;
+        border-color: var(--accent);
+      }
+      .publish-form {
+        margin-top: 1rem;
+      }
+      .publish-form label {
+        margin-top: 0.5rem;
+      }
+      .hidden { display: none; }
+    </style>
+  </head>
+  <body>
+    <div class="app">
+      <h1>Video → YouTube</h1>
+      <p class="subtitle">Enter a prompt, generate a video, then publish to your channel.</p>
+
+      <div id="message" class="message hidden"></div>
+
+      <label for="prompt">Prompt</label>
+      <textarea id="prompt" placeholder="e.g. A serene mountain lake at sunset with soft clouds"></textarea>
+
+      <div class="actions">
+        <button type="button" id="btn-video" class="btn-primary">Generate video</button>
+      </div>
+
+      <div class="preview">
+        <div id="preview-placeholder" class="preview-placeholder">Your video will appear here.</div>
+        <img id="preview-img" class="hidden" alt="Generated" />
+        <video id="preview-video" class="hidden" controls loop></video>
+      </div>
+
+      <section class="youtube-section">
+        <h2>Publish to YouTube</h2>
+        <div id="youtube-status" class="youtube-status disconnected">Not connected</div>
+        <button type="button" id="btn-connect-yt" class="btn-secondary">Connect YouTube account</button>
+        <div id="publish-form" class="publish-form hidden">
+          <label for="yt-title">Video title</label>
+          <input type="text" id="yt-title" placeholder="My generated video" />
+          <label for="yt-desc">Description (optional)</label>
+          <textarea id="yt-desc" rows="2" placeholder="Video description"></textarea>
+          <label for="yt-privacy">Privacy</label>
+          <select id="yt-privacy">
+            <option value="public">Public</option>
+            <option value="unlisted">Unlisted</option>
+            <option value="private">Private</option>
+          </select>
+          <button type="button" id="btn-publish" class="btn-success">Publish to YouTube</button>
+        </div>
+      </section>
+    </div>
+    <script type="module" src="/main.js"></script>
+  </body>
+</html>
