@@ -3,6 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32' fill='%2322d3ee'><path d='M8 4v24l8-4 8 4V4H8zm2 2h12v16l-6-3-6 3V6z'/></svg>" type="image/svg+xml" />
     <title>Video → YouTube</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -221,7 +222,6 @@
 
       <div class="preview">
         <div id="preview-placeholder" class="preview-placeholder">Your video will appear here.</div>
-        <img id="preview-img" class="hidden" alt="Generated" />
         <video id="preview-video" class="hidden" controls loop></video>
       </div>
 
@@ -240,7 +240,10 @@
             <option value="unlisted">Unlisted</option>
             <option value="private">Private</option>
           </select>
-          <button type="button" id="btn-publish" class="btn-success">Publish to YouTube</button>
+          <div class="actions">
+            <button type="button" id="btn-approve" class="btn-secondary" disabled>Approve video</button>
+            <button type="button" id="btn-publish" class="btn-success" disabled>Publish to YouTube</button>
+          </div>
         </div>
       </section>
     </div>
