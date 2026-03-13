@@ -262,28 +262,11 @@ async function renderScriptToVideo(title, lines) {
     ctx.fillStyle = grd;
     ctx.fillRect(0, 0, width, height);
 
-    ctx.fillStyle = '#ffffff';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    const titleStr = title.slice(0, 80);
-    ctx.font = 'bold 56px system-ui';
-    const titleW = ctx.measureText(titleStr).width;
-    const titleH = 64;
-    const pad = 24;
-    const boxX = (width - titleW - pad * 2) / 2;
-    const boxY = height * 0.25 - titleH / 2 - 8;
-    ctx.fillStyle = 'rgba(0,0,0,0.75)';
-    ctx.beginPath();
-    ctx.roundRect(boxX, boxY, titleW + pad * 2, titleH + 16, 12);
-    ctx.fill();
-    ctx.fillStyle = '#ffffff';
-    ctx.font = 'bold 56px system-ui';
-    ctx.fillText(titleStr, width / 2, height * 0.25);
+    drawTitleWithBox(ctx, title, width, height);
 
     const idx = getSegmentIndex(elapsed);
     const current = segmentTexts[idx] ?? '';
-    ctx.font = '28px system-ui';
-    wrapText(ctx, current.slice(0, 200), width / 2, height * 0.8, width * 0.8, 32);
+    drawSubtitleWithBox(ctx, current, width, height);
 
     if (elapsed < totalDurationMs) {
       requestAnimationFrame(drawFrame);
@@ -306,7 +289,7 @@ async function renderScriptToVideo(title, lines) {
   });
 }
 
-function wrapText(ctx, text, x, y, maxWidth, lineHeight) {
+function getWrappedLines(ctx, text, maxWidth) {
   const words = text.split(' ');
   let line = '';
   const lines = [];
@@ -321,9 +304,67 @@ function wrapText(ctx, text, x, y, maxWidth, lineHeight) {
     }
   }
   lines.push(line);
-  const startY = y - ((lines.length - 1) * lineHeight) / 2;
+  return lines;
+}
+
+function drawTitleWithBox(ctx, title, width, height) {
+  const maxW = width * 0.88;
+  const pad = 24;
+  const lineHeight = 58;
+  ctx.font = 'bold 52px system-ui';
+  const titleStr = title.slice(0, 120);
+  const lines = getWrappedLines(ctx, titleStr, maxW);
+  let boxW = 0;
+  lines.forEach((l) => {
+    const w = ctx.measureText(l).width;
+    if (w > boxW) boxW = w;
+  });
+  boxW += pad * 2;
+  const boxH = lines.length * lineHeight + 20;
+  const centerY = height * 0.25;
+  const boxX = (width - boxW) / 2;
+  const boxY = centerY - boxH / 2;
+  ctx.fillStyle = 'rgba(0,0,0,0.75)';
+  ctx.beginPath();
+  ctx.roundRect(boxX, boxY, boxW, boxH, 12);
+  ctx.fill();
+  ctx.fillStyle = '#ffffff';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  const startY = centerY - ((lines.length - 1) * lineHeight) / 2;
   lines.forEach((l, i) => {
-    ctx.fillText(l, x, startY + i * lineHeight);
+    ctx.fillText(l.trim(), width / 2, startY + i * lineHeight);
+  });
+}
+
+function drawSubtitleWithBox(ctx, text, width, height) {
+  const maxW = width * 0.88;
+  const pad = 28;
+  const lineHeight = 42;
+  ctx.font = '36px system-ui';
+  const str = text.slice(0, 300);
+  const lines = getWrappedLines(ctx, str, maxW);
+  if (!lines.length) return;
+  let boxW = 0;
+  lines.forEach((l) => {
+    const w = ctx.measureText(l).width;
+    if (w > boxW) boxW = w;
+  });
+  boxW += pad * 2;
+  const boxH = lines.length * lineHeight + 24;
+  const centerY = height * 0.8;
+  const boxX = (width - boxW) / 2;
+  const boxY = centerY - boxH / 2;
+  ctx.fillStyle = 'rgba(0,0,0,0.75)';
+  ctx.beginPath();
+  ctx.roundRect(boxX, boxY, boxW, boxH, 12);
+  ctx.fill();
+  ctx.fillStyle = '#ffffff';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  const startY = centerY - ((lines.length - 1) * lineHeight) / 2;
+  lines.forEach((l, i) => {
+    ctx.fillText(l.trim(), width / 2, startY + i * lineHeight);
   });
 }
 

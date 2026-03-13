@@ -19,7 +19,12 @@ app.use(express.static(path.join(__dirname, '../dist')));
 app.use('/api/generate-video', videoRouter);
 app.use('/api/youtube', youtubeRouter);
 
-const GIF_KEYWORDS = ['funny cat', 'funny dog', 'meme', 'reaction', 'brainrot'];
+const GIF_KEYWORDS = [
+  'funny cat', 'funny dog', 'cat meme', 'dog meme',
+  'reaction meme', 'cringe', 'brainrot', 'funny reaction',
+  'side eye', 'disgusted', 'shocked', 'crying laugh',
+  'cat side eye', 'dog side eye', 'meme face', 'viral meme',
+];
 
 async function fetchTenorBackgrounds(limit) {
   const apiKey = process.env.TENOR_API_KEY;
