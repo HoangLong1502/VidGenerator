@@ -3,3 +3,5 @@ dist/
 .env
 *.log
 server/tokens.json
+server/tokens-tiktok.json
+server/tiktok-pkce.json
