@@ -6,6 +6,7 @@ import { fileURLToPath } from 'url';
 import fs from 'fs';
 import { videoRouter } from './routes/video.js';
 import { youtubeRouter } from './routes/youtube.js';
+import { tiktokRouter } from './routes/tiktok.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const distIndex = path.join(__dirname, '../dist/index.html');
@@ -18,6 +19,7 @@ app.use(express.static(path.join(__dirname, '../dist')));
 
 app.use('/api/generate-video', videoRouter);
 app.use('/api/youtube', youtubeRouter);
+app.use('/api/tiktok', tiktokRouter);
 
 const GIF_KEYWORDS = ['funny cat', 'funny dog', 'meme', 'reaction', 'brainrot'];
 

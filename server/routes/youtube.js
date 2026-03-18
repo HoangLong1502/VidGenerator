@@ -11,6 +11,7 @@ const router = Router();
 
 const TOKENS_PATH = path.join(__dirname, '../tokens.json');
 const SCOPES = ['https://www.googleapis.com/auth/youtube.upload', 'https://www.googleapis.com/auth/youtube'];
+const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || 'http://localhost:5173';
 
 const storage = multer.memoryStorage();
 const upload = multer({ storage, limits: { fileSize: 256 * 1024 * 1024 } }); // 256MB
@@ -20,7 +21,6 @@ function getOAuth2Client() {
   const clientSecret = process.env.YOUTUBE_CLIENT_SECRET;
   if (!clientId || !clientSecret) return null;
   const redirectUri = process.env.YOUTUBE_REDIRECT_URI || `http://localhost:${process.env.PORT || 3001}/api/youtube/oauth2callback`;
-const frontendOrigin = process.env.FRONTEND_ORIGIN || 'http://localhost:5173';
   return new google.auth.OAuth2(clientId, clientSecret, redirectUri);
 }
 
@@ -58,15 +58,15 @@ router.get('/oauth2callback', async (req, res) => {
   const { code } = req.query;
   const oauth2 = getOAuth2Client();
   if (!oauth2 || !code) {
-    return res.redirect(`${frontendOrigin}/?youtube=error`);
+    return res.redirect(`${FRONTEND_ORIGIN}/?youtube=error`);
   }
   try {
     const { tokens } = await oauth2.getToken(code);
     saveTokens(tokens);
-    res.redirect(`${frontendOrigin}/?youtube=connected`);
+    res.redirect(`${FRONTEND_ORIGIN}/?youtube=connected`);
   } catch (e) {
     console.error('YouTube OAuth error:', e);
-    res.redirect(`${frontendOrigin}/?youtube=error`);
+    res.redirect(`${FRONTEND_ORIGIN}/?youtube=error`);
   }
 });
 

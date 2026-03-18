@@ -246,6 +246,20 @@
           </div>
         </div>
       </section>
+
+      <section class="tiktok-section">
+        <h2>Publish to TikTok</h2>
+        <div id="tiktok-status" class="youtube-status disconnected">Not connected</div>
+        <button type="button" id="btn-connect-tiktok" class="btn-secondary">Connect TikTok account</button>
+        <div id="tiktok-form" class="publish-form hidden">
+          <label for="tiktok-caption">Caption (optional)</label>
+          <input type="text" id="tiktok-caption" placeholder="Caption for your video" maxlength="2200" />
+          <div class="actions">
+            <button type="button" id="btn-approve-tiktok" class="btn-secondary" disabled>Approve video</button>
+            <button type="button" id="btn-publish-tiktok" class="btn-success" disabled>Publish to TikTok</button>
+          </div>
+        </div>
+      </section>
     </div>
     <script type="module" src="/main.js"></script>
   </body>

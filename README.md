@@ -44,6 +44,33 @@ App dùng model `gemini-1.5-flash` để sinh:
 
 Trong app: bấm **Connect YouTube account** → đăng nhập → sau đó dùng **Publish to YouTube** để đăng video.
 
+### 3. TikTok (đăng video)
+
+1. Tạo app tại [TikTok for Developers](https://developers.tiktok.com/) → **Manage apps** → lấy **Client Key** và **Client Secret**.
+2. Trong app TikTok:
+   - Thêm sản phẩm **Login Kit** (bắt buộc cho OAuth).
+   - Thêm **Redirect URI** khớp **chính xác** với backend (xem bên dưới).
+3. TikTok **chỉ chấp nhận Redirect URI bắt đầu bằng https://**. Dùng tunnel ngrok:
+   - **Cài ngrok:** [Tải](https://ngrok.com/download) hoặc `winget install ngrok`.
+   - **Đăng ký ngrok (miễn phí):** [Sign up](https://dashboard.ngrok.com/signup) → vào [Your authtoken](https://dashboard.ngrok.com/get-started/your-authtoken) → chạy một lần: `ngrok config add-authtoken <token>` (hoặc thêm `NGROK_AUTHTOKEN=<token>` vào `.env`).
+   - **Terminal 1:** `npm run dev` (chạy app như bình thường).
+   - **Terminal 2:** `npm run tiktok:tunnel` hoặc `ngrok http 3001`.
+   - Trong terminal ngrok sẽ hiện dòng dạng `Forwarding  https://abc123.ngrok-free.app -> http://localhost:3001`. Copy **https://abc123.ngrok-free.app**.
+   - **TikTok Portal** > Login Kit > Web > Redirect URI: thêm `https://abc123.ngrok-free.app/api/tiktok/oauth2callback` (thay `abc123` bằng subdomain thật của bạn).
+   - Trong **.env** thêm hoặc sửa: `TIKTOK_REDIRECT_URI=https://abc123.ngrok-free.app/api/tiktok/oauth2callback`.
+   - **Restart server** (Ctrl+C rồi `npm run dev` lại). Giữ terminal ngrok mở khi test Connect TikTok.
+4. Điền vào `.env`: `TIKTOK_CLIENT_KEY=...`, `TIKTOK_CLIENT_SECRET=...` (không thêm khoảng trắng thừa).
+
+Kiểm tra cấu hình: mở `http://localhost:3001/api/tiktok/check-config` để xem `redirect_uri` đang dùng và so với TikTok Developer Portal.
+
+5. **Verify 3 URL (Terms, Privacy, Web/Desktop):** TikTok bắt verify mọi URL. Cần dùng domain bạn sở hữu (vd GitHub Pages):
+   - Bật **GitHub Pages** cho repo: Settings → Pages → Source: Deploy from branch → branch `main`, folder **`/docs`** → Save. Site sẽ ở `https://<username>.github.io/VidGenerator/`.
+   - Trong TikTok App details, đổi 3 URL thành (thay `<username>` bằng GitHub username của bạn):
+     - **Web/Desktop URL:** `https://<username>.github.io/VidGenerator/`
+     - **Terms of Service URL:** `https://<username>.github.io/VidGenerator/terms.html`
+     - **Privacy Policy URL:** `https://<username>.github.io/VidGenerator/privacy.html`
+   - Trong TikTok, bấm **URL properties** (đầu trang app) → Verify by **URL prefix** → với từng URL: TikTok cho tải file `tiktok_verify_xxx.html` → đặt file vào thư mục **`docs/`** trong repo → push lên GitHub → bấm Verify lại. Chi tiết: xem `docs/TIKTOK_VERIFY.md`.
+
 ## Luồng sử dụng
 
 1. **Prompt** – Gõ mô tả (vd: "meme chó buồn về thất tình, tone hài bựa").  

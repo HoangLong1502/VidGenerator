@@ -9,7 +9,8 @@
     "dev:client": "wait-on http://localhost:3001/api/health --timeout 60000 && vite",
     "build": "vite build",
     "preview": "vite preview",
-    "server": "node server/index.js"
+    "server": "node server/index.js",
+    "tiktok:tunnel": "node scripts/tiktok-tunnel.js"
   },
   "dependencies": {
     "@google/generative-ai": "^0.21.0",
