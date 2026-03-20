@@ -25,7 +25,10 @@ router.post('/', async (req, res) => {
     const model = genAI.getGenerativeModel({ model: SCRIPT_MODEL });
 
     const systemPrompt = `
-You write short, funny meme scripts for vertical videos with an animated GIF background.
+You write short, funny meme scripts for vertical videos.
+
+The app will generate a sequence of background images from your TITLE and each LINE.
+So keep each LINE vivid and descriptive (without writing any quotes).
 
 Given a topic from the user, produce:
 - A short TITLE (max 60 characters).

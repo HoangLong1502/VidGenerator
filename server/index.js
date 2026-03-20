@@ -5,6 +5,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
 import { videoRouter } from './routes/video.js';
+import { imagesRouter } from './routes/images.js';
 import { youtubeRouter } from './routes/youtube.js';
 import { tiktokRouter } from './routes/tiktok.js';
 
@@ -18,6 +19,7 @@ app.use(express.json({ limit: '10mb' }));
 app.use(express.static(path.join(__dirname, '../dist')));
 
 app.use('/api/generate-video', videoRouter);
+app.use('/api/generate-images', imagesRouter);
 app.use('/api/youtube', youtubeRouter);
 app.use('/api/tiktok', tiktokRouter);
 
