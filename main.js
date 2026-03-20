@@ -21,7 +21,8 @@ const btnPublishTiktok = document.getElementById('btn-publish-tiktok');
 let currentVideoBlob = null;
 let isApprovedForPublish = false;
 
-// Filled at runtime from Tenor
+// Legacy GIF/video background code (kept for later use).
+// Current pipeline uses AI-generated images instead (see `/api/generate-images`).
 let bgVideosCache = [];
 
 function showMessage(text, type = 'info') {
@@ -49,6 +50,18 @@ async function fetchBackgroundGifs(limit = 10) {
   } catch (e) {
     console.error(e);
   }
+}
+
+async function fetchAiBackgroundImages(title, lines, maxImages = 8) {
+  const res = await fetch('/api/generate-images', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title, lines, maxImages }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || data.details || `AI image generation failed: ${res.status}`);
+  if (!Array.isArray(data.images) || !data.images.length) throw new Error('No AI images returned');
+  return data;
 }
 
 const TTS_CONCURRENCY = 3;
@@ -120,7 +133,7 @@ async function buildSyncedAudioStream(segments, blobs) {
   return { stream: dest.stream, startTimesMs, totalDurationMs, segmentTexts, startPlayback };
 }
 
-async function renderScriptToVideo(title, lines) {
+async function renderScriptToVideo(title, lines, bgGen) {
   const width = 720;
   const height = 1280;
 
@@ -129,7 +142,9 @@ async function renderScriptToVideo(title, lines) {
   canvas.height = height;
   const ctx = canvas.getContext('2d');
 
-  const ttsBase = window.location.origin.includes(':5173') ? 'http://localhost:3001' : '';
+  // Use relative `/api/tts`; Vite dev server will proxy it to backend,
+  // and in production backend serves the same origin.
+  const ttsBase = '';
   const segments = [title, ...lines];
   let audioStream = null;
   let startPlayback = null;
@@ -179,36 +194,34 @@ async function renderScriptToVideo(title, lines) {
     segmentTexts = [title, ...lines];
   }
 
-  // 2) Background (Tenor GIF or fallback video)
-  const source =
-    bgVideosCache.length
-      ? bgVideosCache
-      : ['https://sample-videos.com/video321/mp4/720/big_buck_bunny_720p_1mb.mp4'];
-  const mp4s = source.filter((u) => String(u).toLowerCase().includes('.mp4'));
-  const pool = mp4s.length ? mp4s : source;
-  const bgUrl = pool[Math.floor(Math.random() * pool.length)];
+  // 2) Background: AI-generated images (sequence matched to subtitle timing)
+  const bgImageDataUrls = Array.isArray(bgGen?.images) ? bgGen.images : [];
+  const selectedSegmentIndexes = Array.isArray(bgGen?.selectedSegmentIndexes) ? bgGen.selectedSegmentIndexes : [];
 
-  const isGif = bgUrl.toLowerCase().includes('.gif');
-  const bgVideo = isGif ? null : document.createElement('video');
-  const bgImage = isGif ? new Image() : null;
-
-  if (isGif) {
-    bgImage.crossOrigin = 'anonymous';
-    bgImage.src = bgUrl;
-    await new Promise((resolve, reject) => {
-      bgImage.onload = () => resolve();
-      bgImage.onerror = () => reject(new Error('Failed to load GIF background'));
-    }).catch(() => {});
-    // GIF only animates when the img is in the DOM; hide it off-screen
-    bgImage.style.cssText = 'position:fixed;left:-9999px;width:1px;height:1px;opacity:0;pointer-events:none';
-    document.body.appendChild(bgImage);
-  } else {
-    bgVideo.src = bgUrl;
-    bgVideo.loop = true;
-    bgVideo.muted = true;
-    bgVideo.crossOrigin = 'anonymous';
-    await bgVideo.play().catch(() => {});
+  const bgImages = [];
+  for (const dataUrl of bgImageDataUrls) {
+    const img = new Image();
+    img.src = dataUrl;
+    try {
+      // decode() doesn't throw for some dataURL types; keep it best-effort.
+      // eslint-disable-next-line no-await-in-loop
+      await img.decode();
+    } catch (_) {}
+    bgImages.push(img);
   }
+
+  function buildSegmentToImageIndex(segmentCount, selected) {
+    if (!bgImages.length || !Array.isArray(selected) || !selected.length) return new Array(segmentCount).fill(0);
+    const map = new Array(segmentCount).fill(0);
+    let last = 0;
+    for (let seg = 0; seg < segmentCount; seg++) {
+      while (last + 1 < selected.length && selected[last + 1] <= seg) last++;
+      map[seg] = Math.min(last, bgImages.length - 1);
+    }
+    return map;
+  }
+
+  const segmentToImageIndex = buildSegmentToImageIndex(segmentTexts.length, selectedSegmentIndexes);
 
   // 3) Merge canvas (video) + TTS (audio) for recording
   const canvasStream = canvas.captureStream(30);
@@ -255,10 +268,11 @@ async function renderScriptToVideo(title, lines) {
     ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, width, height);
     try {
-      if (isGif && bgImage) {
-        ctx.drawImage(bgImage, 0, 0, width, height);
-      } else if (bgVideo) {
-        ctx.drawImage(bgVideo, 0, 0, width, height);
+      if (bgImages.length) {
+        const idx = getSegmentIndex(elapsed);
+        const imgIdx = segmentToImageIndex[idx] ?? 0;
+        const bgImg = bgImages[imgIdx];
+        if (bgImg) ctx.drawImage(bgImg, 0, 0, width, height);
       }
     } catch {}
 
@@ -296,7 +310,6 @@ async function renderScriptToVideo(title, lines) {
     } else {
       recorder.stop();
       mixedStream.getTracks().forEach((t) => t.stop());
-      if (isGif && bgImage && bgImage.parentNode) bgImage.remove();
     }
   }
 
@@ -346,11 +359,6 @@ async function generateVideo() {
   previewPlaceholder.classList.remove('hidden');
   previewPlaceholder.textContent = 'Generating script…';
 
-  if (!bgVideosCache.length) {
-    previewPlaceholder.textContent = 'Fetching GIFs…';
-    await fetchBackgroundGifs(12);
-  }
-
   try {
     const res = await fetch('/api/generate-video', {
       method: 'POST',
@@ -363,8 +371,12 @@ async function generateVideo() {
       throw new Error('Script is empty. Try another prompt.');
     }
 
+    previewPlaceholder.textContent = 'Generating AI background images…';
+    // Generate more scene-matched images for better story continuity.
+    const desiredImages = Math.min(Math.max(data.lines.length + 1, 6), 12);
+    const bgGen = await fetchAiBackgroundImages(data.title, data.lines, desiredImages);
     previewPlaceholder.textContent = 'Rendering video… (may take a bit)';
-    currentVideoBlob = await renderScriptToVideo(data.title, data.lines);
+    currentVideoBlob = await renderScriptToVideo(data.title, data.lines, bgGen);
 
     previewVideo.src = URL.createObjectURL(currentVideoBlob);
     previewVideo.classList.remove('hidden');
