@@ -9,6 +9,29 @@ const genAI = process.env.GEMINI_API_KEY
 
 // Default to a widely available text model; can override via GEMINI_SCRIPT_MODEL
 const SCRIPT_MODEL = process.env.GEMINI_SCRIPT_MODEL || 'gemini-1.0-pro';
+const SCRIPT_FALLBACK_MODELS = String(
+  process.env.GEMINI_SCRIPT_FALLBACK_MODELS || 'gemini-1.5-flash,gemini-1.0-pro',
+)
+  .split(',')
+  .map((m) => m.trim())
+  .filter(Boolean);
+const SCRIPT_MAX_RETRIES = Number(process.env.GEMINI_SCRIPT_MAX_RETRIES || 3);
+
+function isTransientGeminiError(err) {
+  const msg = String(err?.message || '').toLowerCase();
+  return msg.includes('503') || msg.includes('service unavailable') || msg.includes('high demand') || msg.includes('429');
+}
+
+function extractJson(text) {
+  const raw = String(text || '').trim();
+  if (raw.startsWith('{') && raw.endsWith('}')) return raw;
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  if (fenced?.[1]) return fenced[1].trim();
+  const start = raw.indexOf('{');
+  const end = raw.lastIndexOf('}');
+  if (start >= 0 && end > start) return raw.slice(start, end + 1).trim();
+  return raw;
+}
 
 router.post('/', async (req, res) => {
   const { prompt } = req.body || {};
@@ -22,8 +45,6 @@ router.post('/', async (req, res) => {
   }
 
   try {
-    const model = genAI.getGenerativeModel({ model: SCRIPT_MODEL });
-
     const systemPrompt = `
 You write short, funny meme scripts for vertical videos.
 
@@ -45,14 +66,39 @@ Return ONLY JSON in this exact shape:
 Do not add any extra text before or after the JSON.
 `;
 
-    const result = await model.generateContent(
-      `${systemPrompt}\n\nUser topic: ${prompt.trim()}`
+    const modelCandidates = [SCRIPT_MODEL, ...SCRIPT_FALLBACK_MODELS].filter(
+      (m, i, arr) => arr.indexOf(m) === i,
     );
+    let lastErr = null;
+    let text = '';
 
-    const text = result.response.text();
+    for (const modelName of modelCandidates) {
+      const model = genAI.getGenerativeModel({ model: modelName });
+      for (let attempt = 0; attempt <= SCRIPT_MAX_RETRIES; attempt++) {
+        try {
+          const result = await model.generateContent(
+            `${systemPrompt}\n\nUser topic: ${prompt.trim()}`,
+          );
+          text = result.response.text();
+          lastErr = null;
+          break;
+        } catch (e) {
+          lastErr = e;
+          if (!isTransientGeminiError(e) || attempt === SCRIPT_MAX_RETRIES) break;
+          const delayMs = 1200 * (attempt + 1);
+          // Backoff for temporary load spikes.
+          // eslint-disable-next-line no-await-in-loop
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
+        }
+      }
+      if (!lastErr && text) break;
+    }
+
+    if (lastErr && !text) throw lastErr;
+
     let parsed;
     try {
-      parsed = JSON.parse(text);
+      parsed = JSON.parse(extractJson(text));
     } catch {
       return res.status(502).json({
         error: 'Gemini returned invalid JSON for script. Try a different prompt.',
