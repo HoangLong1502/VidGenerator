@@ -154,6 +154,15 @@
         color: var(--accent);
         border: 1px solid rgba(34, 211, 238, 0.25);
       }
+      .usage-box {
+        background: rgba(34, 211, 238, 0.08);
+        border: 1px solid rgba(34, 211, 238, 0.25);
+        color: #bae6fd;
+        border-radius: 8px;
+        padding: 0.65rem 0.9rem;
+        margin-bottom: 1rem;
+        font-size: 0.86rem;
+      }
       .youtube-section {
         margin-top: 2rem;
         padding-top: 1.5rem;
@@ -219,6 +228,7 @@
       <div class="actions">
         <button type="button" id="btn-video" class="btn-primary">Generate video</button>
       </div>
+      <div id="token-usage" class="usage-box hidden"></div>
 
       <div class="preview">
         <div id="preview-placeholder" class="preview-placeholder">Your video will appear here.</div>
