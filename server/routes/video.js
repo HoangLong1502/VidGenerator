@@ -113,18 +113,6 @@ function normalizeUsage(usageMetadata) {
   };
 }
 
-function hasNonAsciiText(text) {
-  return /[^\x00-\x7F]/.test(String(text || ''));
-}
-
-function sanitizeAsciiTopic(topic) {
-  const cleaned = String(topic || '')
-    .replace(/[^\x00-\x7F]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-  return cleaned || 'a chaotic meme story';
-}
-
 async function repairScriptJson({ genAIClient, modelName, rawText }) {
   const model = genAIClient.getGenerativeModel({
     model: modelName,
@@ -150,15 +138,15 @@ async function repairScriptJson({ genAIClient, modelName, rawText }) {
 }
 
 function buildFallbackScript(topic, maxLines, lineMaxChars) {
-  const cleanTopic = sanitizeAsciiTopic(topic);
+  const cleanTopic = String(topic || 'tinh huong hai huoc').trim() || 'tinh huong hai huoc';
   const title = `Meme: ${cleanTopic}`.slice(0, 60);
   const seedLines = [
-    `Opening scene introduces ${cleanTopic} with chaotic energy.`,
-    'A weird twist appears and everyone freezes for a second.',
-    'The main character tries a bold move and fails instantly.',
-    'Background chaos grows with absurd props and reactions.',
-    'A surprise comeback flips the situation in a funny way.',
-    'Final beat lands like a meme punchline for the audience.',
+    `Mo canh voi ${cleanTopic} trong khong khi hon loan hai huoc.`,
+    'Mot tinh tiet bat ngo xuat hien khien moi nguoi dung hinh trong giay lat.',
+    'Nhan vat chinh thu mot pha choi lon va that bai ngay lap tuc.',
+    'Khung canh xung quanh cang luc cang roi voi nhieu phan ung kho do.',
+    'Mot man lat keo bat ngo xuat hien theo cach cuc ky hai.',
+    'Canh cuoi ket lai bang mot cu chot meme day kich tinh.',
   ];
   const lines = seedLines
     .slice(0, Math.max(4, Math.min(maxLines, seedLines.length)))
@@ -180,7 +168,7 @@ router.post('/', async (req, res) => {
   try {
     const userTopic = prompt.trim().slice(0, SCRIPT_TOPIC_MAX_CHARS);
     const systemPrompt = [
-      'Write a funny vertical-video meme script in English only.',
+      'Write a funny vertical-video meme script in Vietnamese only.',
       'Return strict JSON only with two keys: title (string) and lines (array of strings).',
       `Rules: title <= 60 chars; ${SCRIPT_MIN_LINES}-${SCRIPT_MAX_LINES} lines; each line <= ${SCRIPT_LINE_MAX_CHARS} chars.`,
       'Target total spoken duration around 30 to 60 seconds.',
@@ -269,20 +257,6 @@ router.post('/', async (req, res) => {
             .slice(0, SCRIPT_MAX_LINES)
             .map((l) => l.slice(0, SCRIPT_LINE_MAX_CHARS))
         : [];
-
-    const titleLooksNonEnglish = hasNonAsciiText(title);
-    const linesLookNonEnglish = lines.some((l) => hasNonAsciiText(l));
-    if (titleLooksNonEnglish || linesLookNonEnglish) {
-      const fallback = buildFallbackScript(userTopic, SCRIPT_MAX_LINES, SCRIPT_LINE_MAX_CHARS);
-      return res.json({
-        title: fallback.title,
-        lines: fallback.lines,
-        modelUsed: usedModel || SCRIPT_MODEL,
-        usage,
-        fallbackUsed: true,
-        warning: 'Non-English output detected; used English fallback script.',
-      });
-    }
 
     if (!title || !lines.length) {
       console.error('[generate-video] unusable parsed script', {
