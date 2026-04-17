@@ -76,92 +76,134 @@ function bufferToDataUrl(buffer, mimeType = 'image/jpeg') {
   return `data:${mimeType};base64,${b64}`;
 }
 
+function hashString(input) {
+  const s = String(input || '');
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return Math.abs(h >>> 0);
+}
+
+function buildCharacterAnchor(title) {
+  const palettes = ['teal and white', 'red and black', 'purple and silver', 'blue and gold'];
+  const hairs = ['short silver hair', 'long dark blue hair', 'short black hair with blue streak', 'medium brown hair'];
+  const eyes = ['bright blue eyes', 'amber eyes', 'emerald eyes', 'violet eyes'];
+  const idx = hashString(title) % 4;
+  return [
+    'same recurring female anime narrator character in every image',
+    'female anime presenter character',
+    hairs[idx],
+    eyes[idx],
+    `signature outfit colors: ${palettes[idx]}`,
+    'clean anime line art and consistent face design',
+  ].join(', ');
+}
+
 // Free hosted provider (no API key): Pollinations
-async function generateViaPollinations({ title, scene }) {
+async function generateViaPollinations({ title, scene, characterAnchor }) {
   const stylePreset = String(process.env.IMAGE_STYLE_PRESET || DEFAULT_STYLE_PRESET).toLowerCase();
   const width = Number(process.env.POLLINATIONS_WIDTH || 720);
   const height = Number(process.env.POLLINATIONS_HEIGHT || 1280);
-  const model = process.env.POLLINATIONS_MODEL || POLLINATIONS_DEFAULT_MODEL;
+  const configuredModel = process.env.POLLINATIONS_MODEL || POLLINATIONS_DEFAULT_MODEL;
+  const fallbackModels = String(process.env.POLLINATIONS_FALLBACK_MODELS || 'sana,flux,turbo')
+    .split(',')
+    .map((m) => m.trim())
+    .filter(Boolean);
+  const modelCandidates = [configuredModel, ...fallbackModels].filter(
+    (m, i, arr) => arr.indexOf(m) === i,
+  );
   const seed = Math.floor(Math.random() * 1_000_000_000);
   const enhance =
     String(process.env.POLLINATIONS_ENHANCE || 'true').toLowerCase() === 'true';
   const styleText =
     stylePreset === 'digital_art'
       ? [
-          'simple doodle digital art',
-          'thick black outline',
-          'flat pastel colors',
-          'minimal shading',
-          'cute goofy cartoon mascot',
-          'plain light gray background',
-          'clean minimal composition',
+          'anime-style digital art',
+          'clean line art',
+          'simple cel shading',
+          'high clarity, not blurry',
+          'presentation scene composition',
+          'character on one side, visual panel on the other side',
         ].join(', ')
       : 'illustration, clean composition';
 
   const prompt = [
     'vertical meme background, 9:16',
     styleText,
-    'centered full-body character',
-    'simple hand-drawn meme vibe',
+    characterAnchor,
+    'single female anime narrator character must stay the same design in all scenes',
+    'full body narrator, one hand pointing to the visual panel like presenting',
+    'story visual panel beside narrator, clearly linked to current scene',
+    'change character pose and gesture to match current scene meaning',
     'no text, no watermark, no logo',
-    'no visible human face, no realistic portrait',
-    'absurd funny chaotic visual gag, surreal props, dynamic composition',
+    'anime female face allowed, but no realistic human photo style',
+    'dynamic composition, expressive storytelling pose',
     `theme: ${safeTrim(title, 140)}`,
     `moment: ${safeTrim(scene, 180)}`,
   ].join(', ');
 
-  const base = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}`;
-  const url =
-    `${base}?model=${encodeURIComponent(model)}` +
-    `&width=${width}&height=${height}&seed=${seed}&nologo=true` +
-    (enhance ? '&enhance=true' : '');
-
   return runPollinationsSerial(async () => {
-    let r;
     let lastErr = '';
     const maxRetries = Number(process.env.POLLINATIONS_MAX_RETRIES || 6);
-    for (let attempt = 0; attempt <= maxRetries; attempt++) {
-      try {
-        r = await fetch(url, {
-          headers: {
-            Accept: 'image/*',
-          },
-        });
-      } catch (e) {
-        lastErr = e?.message || 'fetch failed';
-        r = null;
+    const fetchTimeoutMs = Number(process.env.POLLINATIONS_FETCH_TIMEOUT_MS || 45000);
+    for (const model of modelCandidates) {
+      const base = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}`;
+      const url =
+        `${base}?model=${encodeURIComponent(model)}` +
+        `&width=${width}&height=${height}&seed=${seed}&nologo=true` +
+        (enhance ? '&enhance=true' : '');
+
+      for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        let r;
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), fetchTimeoutMs);
+        try {
+          r = await fetch(url, {
+            headers: {
+              Accept: 'image/*',
+            },
+            signal: controller.signal,
+          });
+        } catch (e) {
+          lastErr =
+            e?.name === 'AbortError' ? `request timeout after ${fetchTimeoutMs}ms` : (e?.message || 'fetch failed');
+          r = null;
+        } finally {
+          clearTimeout(timeoutId);
+        }
+
+        if (r?.ok) {
+          const contentType = r.headers.get('content-type') || 'image/jpeg';
+          const arr = await r.arrayBuffer();
+          return bufferToDataUrl(arr, contentType);
+        }
+
+        const status = Number(r?.status || 0);
+        const isRateLimited = status === 429;
+        const isServerBusy = status >= 500 && status < 600;
+        const isNetworkLike = !r || /timeout|fetch failed|socket|network/i.test(lastErr);
+        const isRetryable = isRateLimited || isServerBusy || isNetworkLike;
+        const isLastAttempt = attempt === maxRetries;
+        const text = r ? await r.text().catch(() => '') : '';
+        lastErr = text || lastErr || r?.statusText || 'request failed';
+
+        if (isLastAttempt || !isRetryable) break;
+
+        // Free tier queue can stay busy for a while; use increasing waits.
+        const delayMs = 6000 + attempt * 3500;
+        // eslint-disable-next-line no-await-in-loop
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
       }
-
-      if (r?.ok) break;
-
-      const isRateLimited = r?.status === 429;
-      const isLast = attempt === maxRetries;
-      const text = r ? await r.text().catch(() => '') : '';
-      lastErr = text || lastErr || r?.statusText || 'request failed';
-
-      if (isLast || !isRateLimited) {
-        throw new Error(`Pollinations error (${r?.status || 'network'}): ${lastErr}`);
-      }
-
-      // Queue-full on free tier can persist while prior job is rendering.
-      // Wait longer between retries to let the active job finish.
-      const delayMs = 8000 + attempt * 4000;
-      // eslint-disable-next-line no-await-in-loop
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
     }
 
-    if (!r?.ok) {
-      throw new Error(`Pollinations error: ${lastErr || 'request failed'}`);
-    }
-
-    const contentType = r.headers.get('content-type') || 'image/jpeg';
-    const arr = await r.arrayBuffer();
-    return bufferToDataUrl(arr, contentType);
+    throw new Error(`Pollinations error: ${lastErr || 'request failed'}`);
   });
 }
 
 // Stable Diffusion local provider (free, uses your own machine).
-async function generateViaA1111({ title, scene }) {
+async function generateViaA1111({ title, scene, characterAnchor }) {
   const sdApiBase = process.env.SD_API_URL || 'http://127.0.0.1:7860';
   const width = Number(process.env.SD_WIDTH || 576);
   const height = Number(process.env.SD_HEIGHT || 1024);
@@ -179,11 +221,13 @@ async function generateViaA1111({ title, scene }) {
     'Vertical 9:16 meme background image.',
     'No readable text. No subtitles. No logos. No watermarks. No captions.',
     styleText,
-    'Character-first composition. Keep one centered full-body mascot silhouette.',
-    'Simple hand-drawn meme vibe, clean bold outline, minimal clutter.',
-    'No visible human face. Avoid realistic people and portraits.',
-    'Make it absurd, chaotic, and funny meme energy. Weird visual gag, exaggerated action, surreal props.',
-    'Avoid bland scenes. Use dramatic framing, dynamic motion, and playful visual contrast.',
+    characterAnchor,
+    'Single recurring female anime narrator character must remain consistent across all scenes.',
+    'Character-first composition: narrator on one side and scene panel on the other.',
+    'Narrator points with hand like giving a presentation.',
+    'Pose and gesture should change to match each scene meaning.',
+    'Anime look only, avoid photorealistic people.',
+    'Use dynamic framing and clear storytelling visual cues.',
     'Portrait framing, clear subject, leave safe margins for overlay text.',
     `Theme: ${safeTrim(title, 160)}`,
     `Moment: ${safeTrim(scene, 180)}.`,
@@ -247,12 +291,12 @@ function pickSelectedSegmentIndexes(totalSegments, targetCount) {
   return [...new Set(out)];
 }
 
-async function generateBackgroundImage({ title, scene }) {
+async function generateBackgroundImage({ title, scene, characterAnchor }) {
   if (IMAGE_PROVIDER === 'a1111') {
-    return generateViaA1111({ title, scene });
+    return generateViaA1111({ title, scene, characterAnchor });
   }
   if (IMAGE_PROVIDER === 'pollinations') {
-    return generateViaPollinations({ title, scene });
+    return generateViaPollinations({ title, scene, characterAnchor });
   }
 
   if (!genAI) {
@@ -269,15 +313,15 @@ async function generateBackgroundImage({ title, scene }) {
     'Create a vertical 9:16 meme background image.',
     'No readable text. No subtitles. No logos. No watermarks. No captions.',
     styleText,
-    'Character-first composition, centered full body, simple silhouette.',
-    'Simple hand-drawn meme vibe, clean bold outline, minimal clutter.',
-    'No visible human face. Avoid realistic people and portraits.',
-    'Make it absurd, chaotic, and funny meme energy. Weird visual gag, exaggerated action, surreal props.',
-    'Avoid bland scenes. Use dramatic framing, dynamic motion, and playful visual contrast.',
+    characterAnchor,
+    'Single recurring female anime narrator character must remain the same design across all scenes.',
+    'Narrator stands on one side and points to a story visual panel on the other side.',
+    'Change pose and gesture based on the current scene.',
+    'Clean anime style, expressive and clear storytelling.',
     'Composition: portrait framing, clear subject, leave safe margins for overlay text.',
     `Meme theme: ${safeTrim(title, 160)}`,
     `Current moment: ${safeTrim(scene, 180)}.`,
-    'Avoid: any text, numbers, subtitles, watermarks, logos, signatures, blur, artifacts, low resolution, visible human face, boring background.',
+    'Avoid: any text, numbers, subtitles, watermarks, logos, signatures, blur, artifacts, low resolution, photorealistic face, boring background.',
   ].join(' ');
 
   const config = {
@@ -323,6 +367,7 @@ router.post('/', async (req, res) => {
       ? Number(process.env.POLLINATIONS_MAX_IMAGES || targetMax)
       : targetMax;
   const selectedSegmentIndexes = pickSelectedSegmentIndexes(segments.length, Math.min(targetMax, providerMax));
+  const characterAnchor = buildCharacterAnchor(titleStr);
 
   try {
     // Keep it simple: sequential generation to reduce rate-limit errors.
@@ -330,9 +375,15 @@ router.post('/', async (req, res) => {
     for (let i = 0; i < selectedSegmentIndexes.length; i++) {
       const segIdx = selectedSegmentIndexes[i];
       const scene = segments[segIdx];
-      // eslint-disable-next-line no-await-in-loop
-      const dataUrl = await generateBackgroundImage({ title: titleStr, scene });
-      images.push(dataUrl);
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        const dataUrl = await generateBackgroundImage({ title: titleStr, scene, characterAnchor });
+        images.push(dataUrl);
+      } catch (e) {
+        // Keep generation alive if at least one scene was already generated.
+        if (!images.length) throw e;
+        images.push(images[images.length - 1]);
+      }
       if (IMAGE_PROVIDER === 'pollinations' && i < selectedSegmentIndexes.length - 1) {
         // Keep requests spaced out to avoid per-IP queue throttling.
         // eslint-disable-next-line no-await-in-loop

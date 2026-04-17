@@ -13,10 +13,33 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const distIndex = path.join(__dirname, '../dist/index.html');
 const app = express();
 const PORT = process.env.PORT || 3001;
+const TTS_PROXY_TIMEOUT_MS = Number(process.env.TTS_PROXY_TIMEOUT_MS || 15000);
+const TTS_PROXY_MAX_RETRIES = Number(process.env.TTS_PROXY_MAX_RETRIES || 2);
+
+process.on('unhandledRejection', (reason) => {
+  console.error('[unhandledRejection]', reason);
+});
+
+process.on('uncaughtException', (err) => {
+  console.error('[uncaughtException]', err);
+});
 
 app.use(cors({ origin: true, credentials: true }));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.static(path.join(__dirname, '../dist')));
+
+// Debug access log for API calls that may fail silently in the browser.
+app.use((req, res, next) => {
+  if (!req.path.startsWith('/api/')) return next();
+  const start = Date.now();
+  const originalUrl = req.originalUrl;
+  const method = req.method;
+  res.on('finish', () => {
+    const elapsed = Date.now() - start;
+    console.log(`[api] ${method} ${originalUrl} -> ${res.statusCode} (${elapsed}ms)`);
+  });
+  next();
+});
 
 app.use('/api/generate-video', videoRouter);
 app.use('/api/generate-images', imagesRouter);
@@ -119,19 +142,44 @@ app.post('/api/tts', async (req, res) => {
     return res.status(400).json({ error: 'Missing text for TTS' });
   }
   try {
-    const r = await fetch('http://127.0.0.1:8001/tts', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text }),
-    });
-    if (!r.ok) {
-      const err = await r.text().catch(() => '');
-      console.error('TTS error:', r.status, err);
-      return res.status(502).json({ error: 'TTS server failed' });
+    let lastErr = '';
+    for (let attempt = 0; attempt <= TTS_PROXY_MAX_RETRIES; attempt++) {
+      let r;
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), TTS_PROXY_TIMEOUT_MS);
+      try {
+        r = await fetch('http://127.0.0.1:8001/tts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text }),
+          signal: controller.signal,
+        });
+      } catch (e) {
+        lastErr = e?.name === 'AbortError' ? `timeout after ${TTS_PROXY_TIMEOUT_MS}ms` : (e?.message || 'fetch failed');
+        r = null;
+      } finally {
+        clearTimeout(timeoutId);
+      }
+
+      if (r?.ok) {
+        const buf = await r.arrayBuffer();
+        res.setHeader('Content-Type', 'audio/mpeg');
+        return res.send(Buffer.from(buf));
+      }
+
+      const status = Number(r?.status || 0);
+      const body = r ? await r.text().catch(() => '') : '';
+      lastErr = body || lastErr || r?.statusText || 'request failed';
+      const isRetryable = !r || status >= 500;
+      if (attempt < TTS_PROXY_MAX_RETRIES && isRetryable) {
+        // eslint-disable-next-line no-await-in-loop
+        await new Promise((resolve) => setTimeout(resolve, 300 * (attempt + 1)));
+        continue;
+      }
+      break;
     }
-    const buf = await r.arrayBuffer();
-    res.setHeader('Content-Type', 'audio/mpeg');
-    res.send(Buffer.from(buf));
+    console.error('TTS error:', lastErr);
+    res.status(502).json({ error: `TTS server failed: ${lastErr}` });
   } catch (e) {
     console.error('TTS request error:', e);
     res.status(502).json({ error: 'Could not reach TTS server (start it on port 8001)' });
@@ -148,6 +196,13 @@ app.get('*', (_, res) => {
   } else {
     res.status(404).send('Not found. Run: npm run build');
   }
+});
+
+// Last-resort Express error handler so we never drop connection without logs.
+app.use((err, req, res, _next) => {
+  console.error('[express-error]', req.method, req.path, err);
+  if (res.headersSent) return;
+  res.status(500).json({ error: 'Internal server error' });
 });
 
 app.listen(PORT, () => {

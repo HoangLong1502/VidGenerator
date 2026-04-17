@@ -1,6 +1,7 @@
 const promptEl = document.getElementById('prompt');
 const btnVideo = document.getElementById('btn-video');
 const messageEl = document.getElementById('message');
+const tokenUsageEl = document.getElementById('token-usage');
 const previewPlaceholder = document.getElementById('preview-placeholder');
 const previewVideo = document.getElementById('preview-video');
 const youtubeStatus = document.getElementById('youtube-status');
@@ -35,6 +36,31 @@ function hideMessage() {
   messageEl.classList.add('hidden');
 }
 
+function formatTokenUsage(usageData) {
+  const usage = usageData?.usage;
+  if (!usage || typeof usage !== 'object') return '';
+
+  const promptTokens = Number(usage.promptTokens || 0);
+  const outputTokens = Number(usage.candidatesTokens || 0);
+  const thoughtsTokens = Number(usage.thoughtsTokens || 0);
+  const totalTokens = Number(usage.totalTokens || promptTokens + outputTokens + thoughtsTokens);
+  const modelName = usageData?.modelUsed || 'unknown';
+
+  return `Token usage (${modelName}) - total: ${totalTokens} | prompt: ${promptTokens} | output: ${outputTokens} | thoughts: ${thoughtsTokens}`;
+}
+
+function setTokenUsage(usageData) {
+  if (!tokenUsageEl) return;
+  const text = formatTokenUsage(usageData);
+  if (!text) {
+    tokenUsageEl.textContent = '';
+    tokenUsageEl.classList.add('hidden');
+    return;
+  }
+  tokenUsageEl.textContent = text;
+  tokenUsageEl.classList.remove('hidden');
+}
+
 function setLoading(button, loading) {
   button.disabled = loading;
   button.textContent = loading ? '…' : button.dataset.label || button.textContent;
@@ -53,27 +79,65 @@ async function fetchBackgroundGifs(limit = 10) {
 }
 
 async function fetchAiBackgroundImages(title, lines, maxImages = 8) {
-  const res = await fetch('/api/generate-images', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ title, lines, maxImages }),
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || data.details || `AI image generation failed: ${res.status}`);
-  if (!Array.isArray(data.images) || !data.images.length) throw new Error('No AI images returned');
-  return data;
+  async function requestImages(requestCount) {
+    const res = await fetch('/api/generate-images', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title, lines, maxImages: requestCount }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || data.details || `AI image generation failed: ${res.status}`);
+    if (!Array.isArray(data.images) || !data.images.length) throw new Error('No AI images returned');
+    return data;
+  }
+
+  try {
+    return await requestImages(maxImages);
+  } catch (e) {
+    const msg = String(e?.message || '');
+    const retryable =
+      /empty_response|fetch|timeout|network|502|503|504/i.test(msg);
+    if (!retryable) throw e;
+
+    const reduced = Math.max(3, Math.floor(maxImages / 2));
+    if (reduced >= maxImages) throw e;
+    showMessage(`Image API unstable, retrying with ${reduced} images...`, 'info');
+    return requestImages(reduced);
+  }
 }
 
-const TTS_CONCURRENCY = 3;
+const TTS_CONCURRENCY = 1;
+const TTS_MAX_RETRIES = 2;
+const TTS_RETRY_DELAY_MS = 500;
 
 async function fetchTtsSegment(ttsBase, text) {
-  const res = await fetch(`${ttsBase}/api/tts`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text: text.trim() }),
-  });
-  if (!res.ok) return null;
-  return res.blob();
+  const payload = JSON.stringify({ text: text.trim() });
+  for (let attempt = 0; attempt <= TTS_MAX_RETRIES; attempt++) {
+    try {
+      const res = await fetch(`${ttsBase}/api/tts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: payload,
+      });
+      if (res.ok) return res.blob();
+
+      // Retry transient upstream failures from local TTS server.
+      if (attempt < TTS_MAX_RETRIES && (res.status === 500 || res.status === 502 || res.status === 503)) {
+        // eslint-disable-next-line no-await-in-loop
+        await new Promise((resolve) => setTimeout(resolve, TTS_RETRY_DELAY_MS * (attempt + 1)));
+        continue;
+      }
+      return null;
+    } catch (_) {
+      if (attempt < TTS_MAX_RETRIES) {
+        // eslint-disable-next-line no-await-in-loop
+        await new Promise((resolve) => setTimeout(resolve, TTS_RETRY_DELAY_MS * (attempt + 1)));
+        continue;
+      }
+      return null;
+    }
+  }
+  return null;
 }
 
 async function fetchAllTtsSegments(ttsBase, texts) {
@@ -355,6 +419,7 @@ async function generateVideo() {
   btnVideo.dataset.label = 'Generate video';
   setLoading(btnVideo, true);
   hideMessage();
+  setTokenUsage(null);
   previewVideo.classList.add('hidden');
   previewPlaceholder.classList.remove('hidden');
   previewPlaceholder.textContent = 'Generating script…';
@@ -370,10 +435,12 @@ async function generateVideo() {
     if (!data.title || !Array.isArray(data.lines) || !data.lines.length) {
       throw new Error('Script is empty. Try another prompt.');
     }
+    setTokenUsage(data);
 
     previewPlaceholder.textContent = 'Generating AI background images…';
     // Generate more scene-matched images for better story continuity.
-    const desiredImages = Math.min(Math.max(data.lines.length + 1, 6), 12);
+    // Keep request size moderate to avoid proxy/network drops on huge base64 responses.
+    const desiredImages = Math.min(Math.max(data.lines.length + 1, 4), 8);
     const bgGen = await fetchAiBackgroundImages(data.title, data.lines, desiredImages);
     previewPlaceholder.textContent = 'Rendering video… (may take a bit)';
     currentVideoBlob = await renderScriptToVideo(data.title, data.lines, bgGen);
