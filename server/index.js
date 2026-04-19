@@ -13,8 +13,20 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const distIndex = path.join(__dirname, '../dist/index.html');
 const app = express();
 const PORT = process.env.PORT || 3001;
-const TTS_PROXY_TIMEOUT_MS = Number(process.env.TTS_PROXY_TIMEOUT_MS || 15000);
+const TTS_PROXY_TIMEOUT_MS = Number(process.env.TTS_PROXY_TIMEOUT_MS || 25000);
 const TTS_PROXY_MAX_RETRIES = Number(process.env.TTS_PROXY_MAX_RETRIES || 2);
+const DEFAULT_TTS_VOICE = 'vi-VN-HoaiMyNeural';
+
+function resolveTtsVoice(req) {
+  const fromBody = req.body?.voice;
+  const candidate =
+    typeof fromBody === 'string' && fromBody.trim()
+      ? fromBody.trim()
+      : String(process.env.TTS_VOICE || DEFAULT_TTS_VOICE).trim();
+  // Edge short names, e.g. vi-VN-HoaiMyNeural or en-US-AvaMultilingualNeural (experiment).
+  if (/^[a-z]{2}-[A-Z]{2}-[A-Za-z0-9]+Neural$/.test(candidate)) return candidate;
+  return DEFAULT_TTS_VOICE;
+}
 
 process.on('unhandledRejection', (reason) => {
   console.error('[unhandledRejection]', reason);
@@ -25,7 +37,8 @@ process.on('uncaughtException', (err) => {
 });
 
 app.use(cors({ origin: true, credentials: true }));
-app.use(express.json({ limit: '10mb' }));
+// generate-images returns many base64 data URLs; 10mb is easy to exceed.
+app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || '64mb' }));
 app.use(express.static(path.join(__dirname, '../dist')));
 
 // Debug access log for API calls that may fail silently in the browser.
@@ -136,11 +149,13 @@ app.get('/api/gifs', async (req, res) => {
 });
 
 // Proxy to Edge TTS server (run: uvicorn server:app --port 8001 in F:\coqui-tts-server)
+// Set TTS_VOICE to an Edge neural voice id (default: Vietnamese female).
 app.post('/api/tts', async (req, res) => {
   const { text } = req.body || {};
   if (!text || typeof text !== 'string') {
     return res.status(400).json({ error: 'Missing text for TTS' });
   }
+  const voiceId = resolveTtsVoice(req);
   try {
     let lastErr = '';
     for (let attempt = 0; attempt <= TTS_PROXY_MAX_RETRIES; attempt++) {
@@ -151,7 +166,7 @@ app.post('/api/tts', async (req, res) => {
         r = await fetch('http://127.0.0.1:8001/tts', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text }),
+          body: JSON.stringify({ text, voice: voiceId }),
           signal: controller.signal,
         });
       } catch (e) {

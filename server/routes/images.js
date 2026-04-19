@@ -4,7 +4,7 @@ import { GoogleGenAI } from '@google/genai';
 const router = Router();
 
 const IMAGE_PROVIDER = String(process.env.IMAGE_PROVIDER || 'gemini').toLowerCase();
-const DEFAULT_MAX_IMAGES = Number(process.env.MAX_BG_IMAGES || 8);
+const DEFAULT_MAX_IMAGES = Number(process.env.MAX_BG_IMAGES || 16);
 const DEFAULT_STYLE_PRESET = String(process.env.IMAGE_STYLE_PRESET || 'digital_art');
 
 const DEFAULT_NEGATIVE_PROMPT =
