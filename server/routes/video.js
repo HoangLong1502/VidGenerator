@@ -27,8 +27,9 @@ const SCRIPT_MAX_RETRIES = Number(process.env.GEMINI_SCRIPT_MAX_RETRIES || 3);
 const SCRIPT_TOPIC_MAX_CHARS = Number(process.env.GEMINI_SCRIPT_TOPIC_MAX_CHARS || 240);
 const SCRIPT_MIN_LINES = Number(process.env.GEMINI_SCRIPT_MIN_LINES || 22);
 const SCRIPT_MAX_LINES = Number(process.env.GEMINI_SCRIPT_MAX_LINES || 34);
-const SCRIPT_LINE_MAX_CHARS = Number(process.env.GEMINI_SCRIPT_LINE_MAX_CHARS || 96);
-const SCRIPT_MAX_OUTPUT_TOKENS = Number(process.env.GEMINI_SCRIPT_MAX_OUTPUT_TOKENS || 10240);
+/** Per-line cap after parse (was 96 and truncated mid-sentence). Keep high enough for full Vietnamese sentences. */
+const SCRIPT_LINE_MAX_CHARS = Number(process.env.GEMINI_SCRIPT_LINE_MAX_CHARS || 280);
+const SCRIPT_MAX_OUTPUT_TOKENS = Number(process.env.GEMINI_SCRIPT_MAX_OUTPUT_TOKENS || 16384);
 /** Set to "false" if the API returns 400 (unknown thinkingConfig for your SDK/model). */
 const SCRIPT_DISABLE_THINKING =
   String(process.env.GEMINI_SCRIPT_DISABLE_THINKING || 'true').toLowerCase() !== 'false';
@@ -223,6 +224,7 @@ async function generateLinesOnlyScript({ genAIClient, modelName, title, userTopi
     `You MUST output at least ${SCRIPT_MIN_LINES} and at most ${SCRIPT_MAX_LINES} lines.`,
     `Each line <= ${SCRIPT_LINE_MAX_CHARS} characters.`,
     'Together, lines must be long enough that spoken TTS lasts at least 90 seconds (1m30s); use full sentences per line.',
+    'Each array item must be one or more complete Vietnamese sentences ending with . ! or ?; never truncate mid-sentence.',
     'Each line is a vivid scene description for image generation, natural when read aloud.',
     'No title field, no markdown, no extra keys.',
   ].join(' ');
@@ -401,7 +403,8 @@ router.post('/', async (req, res) => {
       'Write a funny vertical-video meme script in Vietnamese only.',
       'Use correct Vietnamese orthography: full tone marks and vowel marks on every word (đủ dấu thanh và dấu mũ); never output accent-stripped or ASCII-only Vietnamese.',
       'Return strict JSON only with two keys: title (string) and lines (array of strings).',
-      `Rules: title <= 60 chars; you MUST output at least ${SCRIPT_MIN_LINES} lines and at most ${SCRIPT_MAX_LINES} lines; each line <= ${SCRIPT_LINE_MAX_CHARS} chars.`,
+      `Rules: title <= 60 chars; you MUST output at least ${SCRIPT_MIN_LINES} lines and at most ${SCRIPT_MAX_LINES} lines; each line <= ${SCRIPT_LINE_MAX_CHARS} characters (complete thoughts, not truncated).`,
+      'Each lines[] entry must be one or more complete Vietnamese sentences (finish with . ! or ?); never end a line mid-sentence; do not shorten lines artificially to fit a length limit.',
       'Target total spoken narration at least 90 seconds (2 minutes 30 seconds); prefer roughly 150–250 seconds when read aloud: write fuller sentences per line, not one-word punchlines.',
       'Lines must be vivid scene descriptions for image generation and sound natural when read aloud.',
       'No markdown, no extra keys, no explanation.',

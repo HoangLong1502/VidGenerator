@@ -350,7 +350,7 @@ router.post('/', async (req, res) => {
 
   const titleStr = safeTrim(title, 200);
   const linesArr = Array.isArray(lines) ? lines : [];
-  const linesStr = linesArr.map((l) => safeTrim(l, 200)).filter((l) => l.length > 0);
+  const linesStr = linesArr.map((l) => safeTrim(l, 280)).filter((l) => l.length > 0);
 
   if (!titleStr) return res.status(400).json({ error: 'Missing or invalid title' });
   if (!linesStr.length) return res.status(400).json({ error: 'Missing or invalid lines' });

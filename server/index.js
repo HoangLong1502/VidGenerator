@@ -13,8 +13,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const distIndex = path.join(__dirname, '../dist/index.html');
 const app = express();
 const PORT = process.env.PORT || 3001;
-const TTS_PROXY_TIMEOUT_MS = Number(process.env.TTS_PROXY_TIMEOUT_MS || 25000);
-const TTS_PROXY_MAX_RETRIES = Number(process.env.TTS_PROXY_MAX_RETRIES || 2);
+const TTS_PROXY_TIMEOUT_MS = Number(process.env.TTS_PROXY_TIMEOUT_MS || 60000);
+const TTS_PROXY_MAX_RETRIES = Number(process.env.TTS_PROXY_MAX_RETRIES || 3);
 const DEFAULT_TTS_VOICE = 'vi-VN-HoaiMyNeural';
 
 function resolveTtsVoice(req) {

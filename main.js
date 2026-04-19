@@ -151,7 +151,7 @@ async function fetchAiBackgroundImages(title, lines, maxImages = 16) {
 }
 
 const TTS_CONCURRENCY = 1;
-const TTS_MAX_RETRIES = 2;
+const TTS_MAX_RETRIES = 4;
 const TTS_RETRY_DELAY_MS = 500;
 // Must match Edge neural id; sent explicitly so TTS is female even if server .env is wrong.
 const _envTtsVoice = import.meta.env.VITE_TTS_VOICE;
@@ -167,10 +167,22 @@ async function fetchTtsSegment(ttsBase, text) {
         headers: { 'Content-Type': 'application/json' },
         body: payload,
       });
-      if (res.ok) return res.blob();
+      if (res.ok) {
+        const blob = await res.blob();
+        if (blob && blob.size > 0) return blob;
+      }
 
-      // Retry transient upstream failures from local TTS server.
-      if (attempt < TTS_MAX_RETRIES && (res.status === 500 || res.status === 502 || res.status === 503)) {
+      const emptyOk = res.ok;
+      const retryable =
+        emptyOk ||
+        (!res.ok &&
+          (res.status === 500 ||
+            res.status === 502 ||
+            res.status === 503 ||
+            res.status === 504 ||
+            res.status === 429 ||
+            res.status === 408));
+      if (attempt < TTS_MAX_RETRIES && retryable) {
         // eslint-disable-next-line no-await-in-loop
         await new Promise((resolve) => setTimeout(resolve, TTS_RETRY_DELAY_MS * (attempt + 1)));
         continue;
@@ -186,6 +198,23 @@ async function fetchTtsSegment(ttsBase, text) {
     }
   }
   return null;
+}
+
+/** Multi-pass fetch so a single failed chunk does not drop part of the narration. */
+async function fetchTtsBlobsRobust(ttsBase, chunks, rounds = 6) {
+  let blobs = await fetchAllTtsSegments(ttsBase, chunks);
+  for (let round = 0; round < rounds; round++) {
+    let anyMissing = false;
+    for (let i = 0; i < blobs.length; i++) {
+      if (!blobs[i] || blobs[i].size === 0) {
+        anyMissing = true;
+        // eslint-disable-next-line no-await-in-loop
+        blobs[i] = await fetchTtsSegment(ttsBase, chunks[i]);
+      }
+    }
+    if (!anyMissing) break;
+  }
+  return blobs;
 }
 
 async function fetchAllTtsSegments(ttsBase, texts) {
@@ -204,8 +233,11 @@ const TTS_MIX_SAMPLE_RATE = 48000;
 const TTS_MIN_SEGMENT_SEC = 0.08;
 /** Crossfade between TTS clips to hide MP3 edge clicks / hard cuts (ms). */
 const TTS_CROSSFADE_MS = 48;
-/** Edge / Microsoft TTS limits requests (~4096 UTF-8 bytes); oversized text yields truncated MP3 (speech cuts mid-sentence). */
-const TTS_MAX_CHUNK_BYTES = 3800;
+/**
+ * Edge / Microsoft TTS ~4096 UTF-8 bytes per request; staying well under avoids truncated MP3
+ * (speech stops mid-clause even though the request "succeeds").
+ */
+const TTS_MAX_CHUNK_BYTES = 2000;
 const _ttsUtf8 = new TextEncoder();
 
 function utf8ByteLength(s) {
@@ -220,9 +252,16 @@ function splitStringToTtsChunks(text, maxBytes) {
   if (!t) return [];
   if (utf8ByteLength(t) <= maxBytes) return [t];
 
+  // Prefer full sentences; only then clauses (comma); avoid tiny fragments.
   const rough = t.split(/(?<=[.!?…。])\s+/u).filter(Boolean);
-  const pieces = rough.length > 1 ? rough : t.split(/(?<=[,;:，；])\s+/u).filter(Boolean);
-  const words = pieces.length > 1 ? pieces : t.split(/\s+/u).filter(Boolean);
+  const mid = rough.length > 1 ? rough : t.split(/(?<=[,;:，；])\s+/u).filter(Boolean);
+  const pieces =
+    mid.length > 1
+      ? mid
+      : rough.length === 1 && utf8ByteLength(rough[0]) > maxBytes
+        ? rough
+        : t.split(/\s+/u).filter(Boolean);
+  const words = pieces;
 
   const out = [];
   let buf = '';
@@ -272,9 +311,25 @@ function hardSplitUtf8ToTtsChunks(s, maxBytes) {
         hi = mid - 1;
       }
     }
-    const piece = rest.slice(0, best).trim();
+    let cut = best;
+    const head = rest.slice(0, best);
+    const breakAt = Math.max(
+      head.lastIndexOf(' '),
+      head.lastIndexOf('\u00A0'),
+      head.lastIndexOf(','),
+      head.lastIndexOf(';'),
+      head.lastIndexOf('—'),
+    );
+    if (breakAt > 0 && breakAt >= Math.floor(best * 0.45)) {
+      cut = breakAt + 1;
+    }
+    let piece = rest.slice(0, cut).trim();
+    if (!piece) {
+      cut = best;
+      piece = rest.slice(0, cut).trim();
+    }
     if (piece) out.push(piece);
-    rest = rest.slice(best).trim();
+    rest = rest.slice(cut).trim();
   }
   return out.filter(Boolean);
 }
@@ -375,9 +430,21 @@ async function buildSyncedAudioStream(segments, blobs) {
   const decoded = [];
   try {
     for (let i = 0; i < blobs.length; i++) {
-      if (!blobs[i]) continue;
-      const arrayBuffer = await blobs[i].arrayBuffer();
-      const buf = await decodeCtx.decodeAudioData(arrayBuffer.slice(0));
+      if (!blobs[i] || blobs[i].size === 0) {
+        console.warn('[TTS] missing or empty MP3 blob; aborting merge', {
+          index: i,
+          preview: String(segments[i] || '').slice(0, 80),
+        });
+        return { stream: null, startTimesMs: [], totalDurationMs: 0, segmentTexts: [] };
+      }
+      let buf;
+      try {
+        const arrayBuffer = await blobs[i].arrayBuffer();
+        buf = await decodeCtx.decodeAudioData(arrayBuffer.slice(0));
+      } catch (e) {
+        console.warn('[TTS] decodeAudioData failed', { index: i, message: e?.message });
+        return { stream: null, startTimesMs: [], totalDurationMs: 0, segmentTexts: [] };
+      }
       if (!Number.isFinite(buf.duration) || buf.duration < TTS_MIN_SEGMENT_SEC) {
         console.warn('[TTS] segment decode too short or invalid; aborting merge', {
           index: i,
@@ -447,15 +514,9 @@ async function renderScriptToVideo(title, lines, bgGen) {
     let ttsChunks = expanded.chunks;
     logicalSegmentIndex = expanded.logicalSegmentIndex;
 
-    let blobs = await fetchAllTtsSegments(ttsBase, ttsChunks);
-    for (let r = 0; r < blobs.length; r++) {
-      if (!blobs[r]) {
-        // eslint-disable-next-line no-await-in-loop
-        blobs[r] = await fetchTtsSegment(ttsBase, ttsChunks[r]);
-      }
-    }
+    let blobs = await fetchTtsBlobsRobust(ttsBase, ttsChunks);
 
-    if (blobs.filter(Boolean).length === ttsChunks.length) {
+    if (blobs.length === ttsChunks.length && blobs.every((b) => b && b.size > 0)) {
       const synced = await buildSyncedAudioStream(ttsChunks, blobs);
       audioStream = synced.stream;
       startPlayback = synced.startPlayback;
@@ -468,14 +529,8 @@ async function renderScriptToVideo(title, lines, bgGen) {
       const fb = expandTtsSegments([baseSegments.join('. ')]);
       ttsChunks = fb.chunks;
       logicalSegmentIndex = fb.logicalSegmentIndex;
-      const fallbackBlobs = await fetchAllTtsSegments(ttsBase, ttsChunks);
-      for (let r = 0; r < fallbackBlobs.length; r++) {
-        if (!fallbackBlobs[r]) {
-          // eslint-disable-next-line no-await-in-loop
-          fallbackBlobs[r] = await fetchTtsSegment(ttsBase, ttsChunks[r]);
-        }
-      }
-      if (fallbackBlobs.filter(Boolean).length === ttsChunks.length) {
+      const fallbackBlobs = await fetchTtsBlobsRobust(ttsBase, ttsChunks);
+      if (fallbackBlobs.length === ttsChunks.length && fallbackBlobs.every((b) => b && b.size > 0)) {
         const single = await buildSyncedAudioStream(ttsChunks, fallbackBlobs);
         if (single.stream) {
           audioStream = single.stream;
@@ -651,9 +706,13 @@ async function renderScriptToVideo(title, lines, bgGen) {
     }
 
     const idx = getSegmentIndex(elapsed);
-    let current = String(segmentTexts[idx] ?? '').trim();
-    if (!current && logicalSegmentIndex.length > idx) {
+    // Show full script line for subtitles (TTS may split one line into many audio chunks).
+    let current = '';
+    if (logicalSegmentIndex.length > idx) {
       current = String(baseSegments[logicalSegmentIndex[idx]] ?? '').trim();
+    }
+    if (!current) {
+      current = String(segmentTexts[idx] ?? '').trim();
     }
     if (!current && baseSegments.length) {
       const bi = Math.min(idx, baseSegments.length - 1);
