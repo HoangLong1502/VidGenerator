@@ -16,6 +16,20 @@ const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || 'http://localhost:5173';
 const storage = multer.memoryStorage();
 const upload = multer({ storage, limits: { fileSize: 256 * 1024 * 1024 } }); // 256MB
 
+function resolveVideoMimeType(file) {
+  const rawMime = String(file?.mimetype || '').toLowerCase();
+  if (rawMime.startsWith('video/')) return rawMime;
+
+  const ext = path.extname(String(file?.originalname || '')).toLowerCase();
+  if (ext === '.mp4') return 'video/mp4';
+  if (ext === '.webm') return 'video/webm';
+  if (ext === '.mov') return 'video/quicktime';
+  if (ext === '.m4v') return 'video/x-m4v';
+  if (ext === '.mkv') return 'video/x-matroska';
+
+  return 'video/webm';
+}
+
 function getOAuth2Client() {
   const clientId = process.env.YOUTUBE_CLIENT_ID;
   const clientSecret = process.env.YOUTUBE_CLIENT_SECRET;
@@ -105,6 +119,7 @@ router.post('/upload', upload.single('video'), async (req, res) => {
   oauth2.setCredentials(tokens);
 
   try {
+    const mimeType = resolveVideoMimeType(file);
     const youtube = google.youtube({ version: 'v3', auth: oauth2 });
     const result = await youtube.videos.insert({
       part: ['snippet', 'status'],
@@ -119,7 +134,7 @@ router.post('/upload', upload.single('video'), async (req, res) => {
       },
       media: {
         body: Readable.from(file.buffer),
-        mimeType: file.mimetype || 'video/webm',
+        mimeType,
       },
     });
     const id = result.data.id;
