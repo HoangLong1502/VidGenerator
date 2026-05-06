@@ -250,8 +250,11 @@
             <option value="unlisted">Unlisted</option>
             <option value="private">Private</option>
           </select>
+          <label for="yt-publish-at">Schedule publish time</label>
+          <input type="datetime-local" id="yt-publish-at" />
           <div class="actions">
             <button type="button" id="btn-approve" class="btn-secondary" disabled>Approve video</button>
+            <button type="button" id="btn-schedule" class="btn-secondary" disabled>Set publish time</button>
             <button type="button" id="btn-publish" class="btn-success" disabled>Publish to YouTube</button>
           </div>
         </div>

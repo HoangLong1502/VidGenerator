@@ -10,7 +10,9 @@ const publishForm = document.getElementById('publish-form');
 const ytTitle = document.getElementById('yt-title');
 const ytDesc = document.getElementById('yt-desc');
 const ytPrivacy = document.getElementById('yt-privacy');
+const ytPublishAt = document.getElementById('yt-publish-at');
 const btnApprove = document.getElementById('btn-approve');
+const btnSchedule = document.getElementById('btn-schedule');
 const btnPublish = document.getElementById('btn-publish');
 const tiktokStatus = document.getElementById('tiktok-status');
 const btnConnectTiktok = document.getElementById('btn-connect-tiktok');
@@ -869,10 +871,11 @@ async function generateVideo() {
     previewPlaceholder.classList.add('hidden');
     isApprovedForPublish = false;
     if (btnApprove) btnApprove.disabled = false;
+    if (btnSchedule) btnSchedule.disabled = true;
     if (btnPublish) btnPublish.disabled = true;
     if (btnApproveTiktok) btnApproveTiktok.disabled = false;
     if (btnPublishTiktok) btnPublishTiktok.disabled = true;
-    showMessage('Video ready. Review it, then click "Approve video" before publishing.', 'success');
+    showMessage('Video ready. Review it, then click "Approve video" before publishing or scheduling.', 'success');
   } catch (e) {
     showMessage(e.message || 'Video generation failed', 'error');
     previewPlaceholder.textContent = 'Your video will appear here.';
@@ -924,10 +927,11 @@ function approveVideo() {
   }
   isApprovedForPublish = true;
   if (btnApprove) btnApprove.disabled = true;
+  if (btnSchedule) btnSchedule.disabled = false;
   if (btnPublish) btnPublish.disabled = false;
   if (btnApproveTiktok) btnApproveTiktok.disabled = true;
   if (btnPublishTiktok) btnPublishTiktok.disabled = false;
-  showMessage('Video approved. You can publish to YouTube or TikTok.', 'success');
+  showMessage('Video approved. You can publish to YouTube or TikTok, or set a publish time for YouTube.', 'success');
 }
 
 async function publishToYouTube() {
@@ -959,6 +963,53 @@ async function publishToYouTube() {
     showMessage(e.message || 'Upload failed', 'error');
   } finally {
     setLoading(btnPublish, false);
+  }
+}
+
+async function scheduleYouTubePublish() {
+  if (!currentVideoBlob) {
+    showMessage('Generate a video first.', 'error');
+    return;
+  }
+  if (!isApprovedForPublish) {
+    showMessage('Please click "Approve video" after reviewing the video, before scheduling.', 'error');
+    return;
+  }
+  if (!ytPublishAt?.value) {
+    showMessage('Choose a future publish date and time first.', 'error');
+    return;
+  }
+  const publishDate = new Date(ytPublishAt.value);
+  if (Number.isNaN(publishDate.getTime())) {
+    showMessage('Invalid publish date/time.', 'error');
+    return;
+  }
+  if (publishDate <= new Date()) {
+    showMessage('Please choose a time in the future.', 'error');
+    return;
+  }
+
+  btnSchedule.dataset.label = 'Scheduling...';
+  setLoading(btnSchedule, true);
+  hideMessage();
+
+  const form = new FormData();
+  const ext = currentVideoBlob.type.includes('webm') ? 'webm' : 'mp4';
+  form.append('video', currentVideoBlob, `video.${ext}`);
+  form.append('title', ytTitle.value.trim() || 'Generated Video');
+  form.append('description', ytDesc.value.trim() || '');
+  form.append('privacy', 'private');
+  form.append('publishAt', publishDate.toISOString());
+
+  try {
+    const res = await fetch('/api/youtube/upload', { method: 'POST', body: form });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || data.details || 'Schedule failed');
+    showMessage(`Scheduled successfully for ${publishDate.toLocaleString()}.`, 'success');
+  } catch (e) {
+    showMessage(e.message || 'Scheduling failed', 'error');
+  } finally {
+    setLoading(btnSchedule, false);
   }
 }
 
@@ -1041,6 +1092,7 @@ async function publishToTikTok() {
 btnVideo.addEventListener('click', generateVideo);
 btnConnectYt.addEventListener('click', openYoutubeAuth);
 if (btnApprove) btnApprove.addEventListener('click', approveVideo);
+if (btnSchedule) btnSchedule.addEventListener('click', scheduleYouTubePublish);
 btnPublish.addEventListener('click', publishToYouTube);
 if (btnConnectTiktok) btnConnectTiktok.addEventListener('click', openTiktokAuth);
 if (btnApproveTiktok) btnApproveTiktok.addEventListener('click', approveVideo);

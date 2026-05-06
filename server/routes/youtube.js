@@ -5,11 +5,14 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { Readable } from 'stream';
 import multer from 'multer';
+import moment from 'moment';
+import cron from 'node-cron';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const router = Router();
 
 const TOKENS_PATH = path.join(__dirname, '../tokens.json');
+const SCHEDULED_PATH = path.join(__dirname, '../scheduled.json');
 const SCOPES = ['https://www.googleapis.com/auth/youtube.upload', 'https://www.googleapis.com/auth/youtube'];
 const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || 'http://localhost:5173';
 
@@ -49,6 +52,19 @@ function loadTokens() {
 
 function saveTokens(tokens) {
   fs.writeFileSync(TOKENS_PATH, JSON.stringify(tokens, null, 2), 'utf8');
+}
+
+function loadScheduled() {
+  try {
+    const data = fs.readFileSync(SCHEDULED_PATH, 'utf8');
+    return JSON.parse(data);
+  } catch {
+    return [];
+  }
+}
+
+function saveScheduled(scheduled) {
+  fs.writeFileSync(SCHEDULED_PATH, JSON.stringify(scheduled, null, 2), 'utf8');
 }
 
 // Get auth URL for user to sign in
@@ -102,7 +118,7 @@ router.get('/status', async (req, res) => {
 
 // Upload video to YouTube
 router.post('/upload', upload.single('video'), async (req, res) => {
-  const { title = 'Generated Video', description = '', privacy = 'public' } = req.body || {};
+  const { title = 'Generated Video', description = '', privacy = 'public', publishAt, categoryId } = req.body || {};
   const file = req.file;
   if (!file || !file.buffer) {
     return res.status(400).json({ error: 'No video file provided' });
@@ -121,25 +137,57 @@ router.post('/upload', upload.single('video'), async (req, res) => {
   try {
     const mimeType = resolveVideoMimeType(file);
     const youtube = google.youtube({ version: 'v3', auth: oauth2 });
+
+    let status = {
+      privacyStatus: ['public', 'unlisted', 'private'].includes(privacy) ? privacy : 'public',
+    };
+
+    if (publishAt) {
+      const publishTime = moment(publishAt);
+      if (publishTime.isAfter(moment())) {
+        // Schedule for future: upload as private draft
+        status.privacyStatus = 'private';
+      } else {
+        // Publish now
+        status.publishAt = publishTime.toISOString();
+      }
+    }
+
     const result = await youtube.videos.insert({
       part: ['snippet', 'status'],
       requestBody: {
         snippet: {
           title: String(title).slice(0, 100),
           description: String(description).slice(0, 5000),
+          categoryId: categoryId || '22', // Default to People & Blogs
+          short: true,
         },
-        status: {
-          privacyStatus: ['public', 'unlisted', 'private'].includes(privacy) ? privacy : 'public',
-        },
+        status,
       },
       media: {
         body: Readable.from(file.buffer),
         mimeType,
       },
     });
+
     const id = result.data.id;
     const url = `https://www.youtube.com/watch?v=${id}`;
-    res.json({ success: true, videoId: id, url });
+
+    if (publishAt && moment(publishAt).isAfter(moment())) {
+      // Save to scheduled
+      const scheduled = loadScheduled();
+      scheduled.push({
+        videoId: id,
+        publishAt: publishAt,
+        title,
+        description,
+        categoryId: categoryId || '22',
+      });
+      saveScheduled(scheduled);
+      res.json({ success: true, videoId: id, url, scheduled: true });
+    } else {
+      res.json({ success: true, videoId: id, url });
+    }
   } catch (err) {
     console.error('YouTube upload error:', err);
     res.status(502).json({
@@ -147,6 +195,58 @@ router.post('/upload', upload.single('video'), async (req, res) => {
       details: err.response?.data?.error?.message,
     });
   }
+});
+
+async function publishScheduledVideos() {
+  const oauth2 = getOAuth2Client();
+  if (!oauth2) return;
+  const tokens = loadTokens();
+  if (!tokens) return;
+  oauth2.setCredentials(tokens);
+
+  const youtube = google.youtube({ version: 'v3', auth: oauth2 });
+  const scheduled = loadScheduled();
+  const now = moment();
+  const toPublish = [];
+  const remaining = [];
+
+  for (const item of scheduled) {
+    if (moment(item.publishAt).isBefore(now)) {
+      toPublish.push(item);
+    } else {
+      remaining.push(item);
+    }
+  }
+
+  for (const item of toPublish) {
+    try {
+      await youtube.videos.update({
+        part: ['status', 'snippet'],
+        requestBody: {
+          id: item.videoId,
+          snippet: {
+            title: item.title,
+            description: item.description,
+            categoryId: item.categoryId,
+          },
+          status: {
+            privacyStatus: 'public',
+          },
+        },
+      });
+      console.log(`Published scheduled video: ${item.videoId}`);
+    } catch (err) {
+      console.error(`Failed to publish ${item.videoId}:`, err);
+      remaining.push(item); // Retry later
+    }
+  }
+
+  saveScheduled(remaining);
+}
+
+// Schedule cron job to check every minute
+cron.schedule('* * * * *', () => {
+  publishScheduledVideos();
 });
 
 export { router as youtubeRouter };
