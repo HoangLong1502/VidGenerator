@@ -7,6 +7,7 @@ import { Readable } from 'stream';
 import multer from 'multer';
 import moment from 'moment';
 import cron from 'node-cron';
+import { applyShortsMetadata, shortsWatchUrl } from '../../lib/youtubeShorts.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const router = Router();
@@ -118,7 +119,15 @@ router.get('/status', async (req, res) => {
 
 // Upload video to YouTube
 router.post('/upload', upload.single('video'), async (req, res) => {
-  const { title = 'Generated Video', description = '', privacy = 'public', publishAt, categoryId } = req.body || {};
+  const {
+    title = 'Generated Video',
+    description = '',
+    privacy = 'public',
+    publishAt,
+    categoryId,
+    asShort,
+  } = req.body || {};
+  const publishAsShort = String(asShort ?? 'true').toLowerCase() !== 'false';
   const file = req.file;
   if (!file || !file.buffer) {
     return res.status(400).json({ error: 'No video file provided' });
@@ -153,14 +162,20 @@ router.post('/upload', upload.single('video'), async (req, res) => {
       }
     }
 
+    const snippet = publishAsShort
+      ? applyShortsMetadata({ title, description })
+      : {
+          title: String(title).slice(0, 100),
+          description: String(description).slice(0, 5000),
+          tags: [],
+        };
+
     const result = await youtube.videos.insert({
       part: ['snippet', 'status'],
       requestBody: {
         snippet: {
-          title: String(title).slice(0, 100),
-          description: String(description).slice(0, 5000),
-          categoryId: categoryId || '22', // Default to People & Blogs
-          short: true,
+          ...snippet,
+          categoryId: categoryId || '22',
         },
         status,
       },
@@ -171,7 +186,7 @@ router.post('/upload', upload.single('video'), async (req, res) => {
     });
 
     const id = result.data.id;
-    const url = `https://www.youtube.com/watch?v=${id}`;
+    const url = publishAsShort ? shortsWatchUrl(id) : `https://www.youtube.com/watch?v=${id}`;
 
     if (publishAt && moment(publishAt).isAfter(moment())) {
       // Save to scheduled
@@ -184,9 +199,9 @@ router.post('/upload', upload.single('video'), async (req, res) => {
         categoryId: categoryId || '22',
       });
       saveScheduled(scheduled);
-      res.json({ success: true, videoId: id, url, scheduled: true });
+      res.json({ success: true, videoId: id, url, shorts: publishAsShort, scheduled: true });
     } else {
-      res.json({ success: true, videoId: id, url });
+      res.json({ success: true, videoId: id, url, shorts: publishAsShort });
     }
   } catch (err) {
     console.error('YouTube upload error:', err);

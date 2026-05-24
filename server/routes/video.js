@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { GoogleGenerativeAI } from '@google/generative-ai';
+import { stripTtsMetaLine } from '../../lib/stripTtsMeta.js';
 
 const router = Router();
 
@@ -35,6 +36,21 @@ const SCRIPT_DISABLE_THINKING =
 const REPAIR_CONTENT_MAX_CHARS = Number(process.env.GEMINI_SCRIPT_REPAIR_CONTENT_MAX || 14000);
 const GEMINI_429_MAX_RETRIES = Number(process.env.GEMINI_SCRIPT_429_MAX_RETRIES || 3);
 const GEMINI_429_MAX_WAIT_MS = Number(process.env.GEMINI_SCRIPT_429_MAX_WAIT_MS || 48000);
+
+const SCRIPT_NO_META_RULE =
+  'Do NOT prefix lines with scene labels (e.g. "Cảnh 1", "Cảnh tiếp theo", "Cảnh mở đầu") or narrator tags ("Giọng đọc", "Lời dẫn"); write only spoken narration.';
+
+function normalizeScriptLine(line) {
+  const trimmed = String(line || '').trim();
+  if (!trimmed) return '';
+  const cleaned = stripTtsMetaLine(trimmed);
+  if (!cleaned) return '';
+  return cleaned.slice(0, SCRIPT_LINE_MAX_CHARS);
+}
+
+function normalizeScriptLines(lines) {
+  return lines.map(normalizeScriptLine).filter((l) => l.length > 0).slice(0, SCRIPT_MAX_LINES);
+}
 
 function buildScriptGenerationConfig({ maxOutputTokens, temperature, responseMimeType }) {
   const cfg = {
@@ -224,6 +240,7 @@ async function generateLinesOnlyScript({ genAIClient, modelName, title, userTopi
     `Each line <= ${SCRIPT_LINE_MAX_CHARS} characters.`,
     'Together, lines must be long enough that spoken TTS lasts at least 90 seconds (1m30s); use full sentences per line.',
     'Each line is a vivid scene description for image generation, natural when read aloud.',
+    SCRIPT_NO_META_RULE,
     'No title field, no markdown, no extra keys.',
   ].join(' ');
 
@@ -241,11 +258,7 @@ async function generateLinesOnlyScript({ genAIClient, modelName, title, userTopi
   if (!lines.length) {
     lines = tryRecoverLinesArrayOnly(raw);
   }
-  return lines
-    .map((l) => String(l || '').trim())
-    .filter((l) => l.length > 0)
-    .slice(0, SCRIPT_MAX_LINES)
-    .map((l) => l.slice(0, SCRIPT_LINE_MAX_CHARS));
+  return normalizeScriptLines(lines);
 }
 
 /** Pull string elements from a blob that is mostly a JSON "lines" array. */
@@ -307,13 +320,7 @@ async function parseScriptWithRecovery(rawText, genAIClient, modelName, userTopi
   let parsedObj = parsed && typeof parsed === 'object' ? parsed : {};
   let title = typeof parsedObj.title === 'string' ? parsedObj.title.trim() : '';
   let lines =
-    Array.isArray(parsedObj.lines) && parsedObj.lines.length
-      ? parsedObj.lines
-          .map((l) => String(l || '').trim())
-          .filter((l) => l.length > 0)
-          .slice(0, SCRIPT_MAX_LINES)
-          .map((l) => l.slice(0, SCRIPT_LINE_MAX_CHARS))
-      : [];
+    Array.isArray(parsedObj.lines) && parsedObj.lines.length ? normalizeScriptLines(parsedObj.lines) : [];
 
   if (!title && rawText) {
     title = extractTitleFromPartialRaw(rawText);
@@ -349,13 +356,7 @@ async function parseScriptWithRecovery(rawText, genAIClient, modelName, userTopi
       parsedObj = parsed && typeof parsed === 'object' ? parsed : {};
       const t2 = typeof parsedObj.title === 'string' ? parsedObj.title.trim() : '';
       const l2 =
-        Array.isArray(parsedObj.lines) && parsedObj.lines.length
-          ? parsedObj.lines
-              .map((l) => String(l || '').trim())
-              .filter((l) => l.length > 0)
-              .slice(0, SCRIPT_MAX_LINES)
-              .map((l) => l.slice(0, SCRIPT_LINE_MAX_CHARS))
-          : [];
+        Array.isArray(parsedObj.lines) && parsedObj.lines.length ? normalizeScriptLines(parsedObj.lines) : [];
       if (l2.length) {
         lines = l2;
         if (t2) title = t2;
@@ -404,6 +405,7 @@ router.post('/', async (req, res) => {
       `Rules: title <= 60 chars; you MUST output at least ${SCRIPT_MIN_LINES} lines and at most ${SCRIPT_MAX_LINES} lines; each line <= ${SCRIPT_LINE_MAX_CHARS} chars.`,
       'Target total spoken narration at least 90 seconds (2 minutes 30 seconds); prefer roughly 150–250 seconds when read aloud: write fuller sentences per line, not one-word punchlines.',
       'Lines must be vivid scene descriptions for image generation and sound natural when read aloud.',
+      SCRIPT_NO_META_RULE,
       'No markdown, no extra keys, no explanation.',
     ].join(' ');
 
@@ -531,9 +533,17 @@ router.post('/', async (req, res) => {
       });
     }
 
+    const cleanTitle = stripTtsMetaLine(title) || title;
+    const cleanLines = normalizeScriptLines(lines);
+    if (!cleanTitle || !cleanLines.length) {
+      return res.status(502).json({
+        error: 'AI script contained only stage-direction labels. Try another prompt.',
+      });
+    }
+
     res.json({
-      title,
-      lines,
+      title: cleanTitle,
+      lines: cleanLines,
       modelUsed: usedModel || SCRIPT_MODEL,
       usage,
     });

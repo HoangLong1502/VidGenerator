@@ -4,7 +4,7 @@ import { GoogleGenAI } from '@google/genai';
 const router = Router();
 
 const IMAGE_PROVIDER = String(process.env.IMAGE_PROVIDER || 'gemini').toLowerCase();
-const DEFAULT_MAX_IMAGES = Number(process.env.MAX_BG_IMAGES || 16);
+const DEFAULT_MAX_IMAGES = Number(process.env.MAX_BG_IMAGES || 20);
 const DEFAULT_STYLE_PRESET = String(process.env.IMAGE_STYLE_PRESET || 'digital_art');
 
 const DEFAULT_NEGATIVE_PROMPT =
@@ -362,11 +362,13 @@ router.post('/', async (req, res) => {
 
   const segments = [titleStr, ...linesStr];
   const targetMax = Number.isFinite(Number(maxImages)) ? Number(maxImages) : DEFAULT_MAX_IMAGES;
+  const pollinationsCap = Number(process.env.POLLINATIONS_MAX_IMAGES);
   const providerMax =
-    IMAGE_PROVIDER === 'pollinations'
-      ? Number(process.env.POLLINATIONS_MAX_IMAGES || targetMax)
+    IMAGE_PROVIDER === 'pollinations' && Number.isFinite(pollinationsCap) && pollinationsCap > 0
+      ? pollinationsCap
       : targetMax;
-  const selectedSegmentIndexes = pickSelectedSegmentIndexes(segments.length, Math.min(targetMax, providerMax));
+  const imageCount = Math.min(targetMax, providerMax, segments.length);
+  const selectedSegmentIndexes = pickSelectedSegmentIndexes(segments.length, imageCount);
   const characterAnchor = buildCharacterAnchor(titleStr);
 
   try {
