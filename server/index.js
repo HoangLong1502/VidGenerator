@@ -15,7 +15,25 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 const TTS_PROXY_TIMEOUT_MS = Number(process.env.TTS_PROXY_TIMEOUT_MS || 25000);
 const TTS_PROXY_MAX_RETRIES = Number(process.env.TTS_PROXY_MAX_RETRIES || 2);
+const TTS_SERVER_URL = String(process.env.TTS_SERVER_URL || 'http://127.0.0.1:8001').replace(/\/$/, '');
 const DEFAULT_TTS_VOICE = 'vi-VN-HoaiMyNeural';
+
+async function probeTtsServer(timeoutMs = 4000) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const r = await fetch(`${TTS_SERVER_URL}/docs`, {
+      method: 'GET',
+      signal: controller.signal,
+    });
+    return { ok: r.ok, status: r.status };
+  } catch (e) {
+    const msg = e?.name === 'AbortError' ? `timeout after ${timeoutMs}ms` : e?.message || 'fetch failed';
+    return { ok: false, error: msg };
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
 
 function resolveTtsVoice(req) {
   const fromBody = req.body?.voice;
@@ -163,7 +181,7 @@ app.post('/api/tts', async (req, res) => {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), TTS_PROXY_TIMEOUT_MS);
       try {
-        r = await fetch('http://127.0.0.1:8001/tts', {
+        r = await fetch(`${TTS_SERVER_URL}/tts`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ text, voice: voiceId }),
@@ -193,15 +211,40 @@ app.post('/api/tts', async (req, res) => {
       }
       break;
     }
+    const unreachable = /fetch failed|ECONNREFUSED|ENOTFOUND/i.test(lastErr);
     console.error('TTS error:', lastErr);
-    res.status(502).json({ error: `TTS server failed: ${lastErr}` });
+    res.status(502).json({
+      error: unreachable
+        ? `TTS server not running at ${TTS_SERVER_URL}. Start: cd F:\\coqui-tts-server && .\\.venv\\Scripts\\activate && uvicorn server:app --host 127.0.0.1 --port 8001`
+        : `TTS server failed: ${lastErr}`,
+      code: unreachable ? 'tts_unreachable' : 'tts_error',
+    });
   } catch (e) {
     console.error('TTS request error:', e);
-    res.status(502).json({ error: 'Could not reach TTS server (start it on port 8001)' });
+    res.status(502).json({
+      error: `Could not reach TTS server at ${TTS_SERVER_URL}`,
+      code: 'tts_unreachable',
+    });
   }
 });
 
-app.get('/api/health', (_, res) => res.json({ ok: true }));
+app.get('/api/tts/status', async (_, res) => {
+  const probe = await probeTtsServer();
+  if (probe.ok) {
+    return res.json({ ok: true, url: TTS_SERVER_URL });
+  }
+  return res.status(503).json({
+    ok: false,
+    url: TTS_SERVER_URL,
+    error: probe.error || `HTTP ${probe.status}`,
+    hint: 'cd F:\\coqui-tts-server && .\\.venv\\Scripts\\activate && uvicorn server:app --host 127.0.0.1 --port 8001',
+  });
+});
+
+app.get('/api/health', async (_, res) => {
+  const tts = await probeTtsServer(2500);
+  res.json({ ok: true, tts: tts.ok ? 'up' : 'down', ttsUrl: TTS_SERVER_URL });
+});
 
 app.get('*', (_, res) => {
   if (fs.existsSync(distIndex)) {

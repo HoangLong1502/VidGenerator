@@ -1,3 +1,5 @@
+import { stripTtsMetaLine, stripTtsMetaSegments } from './lib/stripTtsMeta.js';
+
 const promptEl = document.getElementById('prompt');
 const btnVideo = document.getElementById('btn-video');
 const messageEl = document.getElementById('message');
@@ -80,51 +82,103 @@ async function fetchBackgroundGifs(limit = 10) {
   }
 }
 
+/** Parse data:...;base64,... into a Blob (avoids browser limits on huge data: URLs in Image.src). */
+function dataUrlToBlob(dataUrl) {
+  const s = String(dataUrl || '').trim();
+  const m = s.match(/^data:([^;,]+)?(?:;[^,]*)?;base64,(.+)$/is);
+  if (!m) return null;
+  const mime = (m[1] || 'image/jpeg').toLowerCase();
+  const b64 = m[2].replace(/\s/g, '');
+  if (!b64) return null;
+  try {
+    const bin = atob(b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return new Blob([bytes], { type: mime });
+  } catch {
+    return null;
+  }
+}
+
 /**
- * Decode a data URL into something drawImage accepts. Safari/WebKit sometimes fails img.decode()
- * on large base64; ImageBitmap from Blob is more reliable.
+ * Decode API image payload into something drawImage accepts.
+ * Large base64 data URLs often fail with new Image().src; Blob + createImageBitmap is reliable.
  */
 async function loadDataUrlAsDrawable(dataUrl) {
-  const s = String(dataUrl || '');
-  if (!s.startsWith('data:')) return null;
+  const blob = dataUrlToBlob(dataUrl);
+  if (!blob || !String(blob.type || '').startsWith('image/')) return null;
 
-  const tryImg = () =>
-    new Promise((resolve, reject) => {
-      const img = new Image();
-      img.onload = () => {
-        if (img.naturalWidth >= 2 && img.naturalHeight >= 2) resolve(img);
+  const targetW = 720;
+  const targetH = 1280;
+
+  if (typeof createImageBitmap === 'function') {
+    try {
+      const bmp = await createImageBitmap(blob, {
+        resizeWidth: targetW,
+        resizeHeight: targetH,
+        resizeQuality: 'high',
+      });
+      if (bmp.width >= 2 && bmp.height >= 2) return bmp;
+      bmp.close?.();
+    } catch (_) {
+      try {
+        const bmp = await createImageBitmap(blob);
+        if (bmp.width >= 2 && bmp.height >= 2) return bmp;
+        bmp.close?.();
+      } catch (e2) {
+        console.warn('[video] createImageBitmap failed', e2?.message || e2);
+      }
+    }
+  }
+
+  let objectUrl = '';
+  try {
+    objectUrl = URL.createObjectURL(blob);
+    const img = await new Promise((resolve, reject) => {
+      const el = new Image();
+      el.onload = () => {
+        if (el.naturalWidth >= 2 && el.naturalHeight >= 2) resolve(el);
         else reject(new Error('zero-size image'));
       };
-      img.onerror = () => reject(new Error('Image.onerror'));
-      img.src = s;
+      el.onerror = () => reject(new Error('Image.onerror'));
+      el.src = objectUrl;
     });
-
-  try {
-    const img = await tryImg();
     if (typeof img.decode === 'function') {
       try {
         await img.decode();
       } catch (_) {
-        /* decode optional */
+        /* optional */
       }
     }
     return img;
-  } catch (e1) {
-    try {
-      const res = await fetch(s);
-      const blob = await res.blob();
-      if (typeof createImageBitmap === 'function') {
-        const bmp = await createImageBitmap(blob);
-        if (bmp.width >= 2 && bmp.height >= 2) return bmp;
-      }
-    } catch (e2) {
-      console.warn('[video] Could not load background image', e1?.message || e1, e2?.message || e2);
-    }
+  } catch (e3) {
+    console.warn('[video] Could not load background image', e3?.message || e3);
+    return null;
+  } finally {
+    if (objectUrl) URL.revokeObjectURL(objectUrl);
   }
-  return null;
 }
 
-async function fetchAiBackgroundImages(title, lines, maxImages = 16) {
+async function preloadBackgroundDrawables(imageDataUrls) {
+  const urls = Array.isArray(imageDataUrls) ? imageDataUrls : [];
+  const drawables = [];
+  let failed = 0;
+  for (let i = 0; i < urls.length; i++) {
+    // eslint-disable-next-line no-await-in-loop
+    const drawable = await loadDataUrlAsDrawable(urls[i]);
+    if (drawable) drawables.push(drawable);
+    else {
+      failed += 1;
+      console.warn('[video] Skipping unreadable background frame', i);
+    }
+  }
+  return { drawables, failed, total: urls.length };
+}
+
+// Enough variety without huge base64 JSON that breaks browser decode/memory.
+const MAX_BG_IMAGES = 20;
+
+async function fetchAiBackgroundImages(title, lines, maxImages = MAX_BG_IMAGES) {
   async function requestImages(requestCount) {
     const res = await fetch('/api/generate-images', {
       method: 'POST',
@@ -153,15 +207,35 @@ async function fetchAiBackgroundImages(title, lines, maxImages = 16) {
 }
 
 const TTS_CONCURRENCY = 1;
-const TTS_MAX_RETRIES = 2;
-const TTS_RETRY_DELAY_MS = 500;
+const TTS_MAX_RETRIES = 4;
+const TTS_RETRY_DELAY_MS = 800;
+let ttsServerUnreachable = false;
+
+async function checkTtsServerAvailable() {
+  try {
+    const res = await fetch('/api/tts/status');
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && data.ok) {
+      ttsServerUnreachable = false;
+      return true;
+    }
+    ttsServerUnreachable = true;
+    return false;
+  } catch {
+    ttsServerUnreachable = true;
+    return false;
+  }
+}
 // Must match Edge neural id; sent explicitly so TTS is female even if server .env is wrong.
 const _envTtsVoice = import.meta.env.VITE_TTS_VOICE;
 const TTS_EDGE_VOICE =
   (typeof _envTtsVoice === 'string' && _envTtsVoice.trim()) || 'vi-VN-HoaiMyNeural';
 
 async function fetchTtsSegment(ttsBase, text) {
-  const payload = JSON.stringify({ text: text.trim(), voice: TTS_EDGE_VOICE });
+  const trimmed = String(text || '').trim();
+  if (!trimmed) return null;
+  if (ttsServerUnreachable) return null;
+  const payload = JSON.stringify({ text: trimmed, voice: TTS_EDGE_VOICE });
   for (let attempt = 0; attempt <= TTS_MAX_RETRIES; attempt++) {
     try {
       const res = await fetch(`${ttsBase}/api/tts`, {
@@ -170,6 +244,12 @@ async function fetchTtsSegment(ttsBase, text) {
         body: payload,
       });
       if (res.ok) return res.blob();
+
+      const errBody = await res.json().catch(() => ({}));
+      if (res.status === 502 && errBody.code === 'tts_unreachable') {
+        ttsServerUnreachable = true;
+        return null;
+      }
 
       // Retry transient upstream failures from local TTS server.
       if (attempt < TTS_MAX_RETRIES && (res.status === 500 || res.status === 502 || res.status === 503)) {
@@ -378,24 +458,30 @@ async function buildSyncedAudioStream(segments, blobs) {
   try {
     for (let i = 0; i < blobs.length; i++) {
       if (!blobs[i]) continue;
-      const arrayBuffer = await blobs[i].arrayBuffer();
-      const buf = await decodeCtx.decodeAudioData(arrayBuffer.slice(0));
-      if (!Number.isFinite(buf.duration) || buf.duration < TTS_MIN_SEGMENT_SEC) {
-        console.warn('[TTS] segment decode too short or invalid; aborting merge', {
-          index: i,
-          duration: buf.duration,
-          preview: String(segments[i] || '').slice(0, 80),
-        });
-        return { stream: null, startTimesMs: [], totalDurationMs: 0, segmentTexts: [] };
+      try {
+        const arrayBuffer = await blobs[i].arrayBuffer();
+        const buf = await decodeCtx.decodeAudioData(arrayBuffer.slice(0));
+        if (!Number.isFinite(buf.duration) || buf.duration < TTS_MIN_SEGMENT_SEC) {
+          console.warn('[TTS] skipping short/invalid segment', {
+            index: i,
+            duration: buf.duration,
+            preview: String(segments[i] || '').slice(0, 80),
+          });
+          continue;
+        }
+        decoded.push({ buffer: buf, text: segments[i] });
+      } catch (e) {
+        console.warn('[TTS] skipping undecodable segment', i, e?.message || e);
       }
-      decoded.push({ buffer: buf, text: segments[i] });
     }
   } finally {
     try {
       await decodeCtx.close();
     } catch (_) {}
   }
-  if (!decoded.length) return { stream: null, startTimesMs: [], totalDurationMs: 0, segmentTexts: [] };
+  if (!decoded.length) {
+    return { mergedBuffer: null, startTimesMs: [], totalDurationMs: 0, segmentTexts: [] };
+  }
 
   const segmentTexts = decoded.map((d) => d.text);
   const resampled = [];
@@ -411,20 +497,48 @@ async function buildSyncedAudioStream(segments, blobs) {
     crossfadeSamples,
   );
 
-  const playCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: TTS_MIX_SAMPLE_RATE });
-  const dest = playCtx.createMediaStreamDestination();
-  const src = playCtx.createBufferSource();
-  src.buffer = merged;
-  src.connect(dest);
-  const startPlayback = () => {
-    try {
-      src.start(0);
-    } catch (_) {}
-  };
-  return { stream: dest.stream, startTimesMs, totalDurationMs, segmentTexts, startPlayback };
+  return { mergedBuffer: merged, startTimesMs, totalDurationMs, segmentTexts };
 }
 
-async function renderScriptToVideo(title, lines, bgGen) {
+/**
+ * Route merged TTS into a MediaStream for MediaRecorder.
+ * Prefer sharedCtx unlocked on the Generate click so audio still works after long image generation.
+ */
+function createRecordingAudioStream(mergedBuffer, sharedCtx = null) {
+  if (!mergedBuffer) return { stream: null, startPlayback: null, cleanup: () => {} };
+
+  const ownsCtx = !sharedCtx;
+  const playCtx =
+    sharedCtx ||
+    new (window.AudioContext || window.webkitAudioContext)({
+      sampleRate: TTS_MIX_SAMPLE_RATE,
+    });
+  const dest = playCtx.createMediaStreamDestination();
+  const src = playCtx.createBufferSource();
+  src.buffer = mergedBuffer;
+  src.connect(dest);
+
+  const startPlayback = async () => {
+    try {
+      if (playCtx.state === 'suspended') await playCtx.resume();
+      src.start(0);
+    } catch (e) {
+      console.warn('[TTS] playback start failed', e?.message || e);
+      throw e;
+    }
+  };
+
+  const cleanup = () => {
+    if (!ownsCtx) return;
+    try {
+      playCtx.close();
+    } catch (_) {}
+  };
+
+  return { stream: dest.stream, startPlayback, cleanup };
+}
+
+async function renderScriptToVideo(title, lines, bgGen, unlockedAudioCtx = null) {
   const width = 720;
   const height = 1280;
 
@@ -436,10 +550,11 @@ async function renderScriptToVideo(title, lines, bgGen) {
   // Use relative `/api/tts`; Vite dev server will proxy it to backend,
   // and in production backend serves the same origin.
   const ttsBase = '';
-  const baseSegments = [title, ...lines].map((s) => String(s || '').trim());
+  const cleanTitle = stripTtsMetaLine(title) || String(title || '').trim();
+  const cleanLines = lines.map(stripTtsMetaLine).filter(Boolean);
+  const baseSegments = stripTtsMetaSegments([cleanTitle, ...cleanLines]);
   let logicalSegmentIndex = [];
-  let audioStream = null;
-  let startPlayback = null;
+  let mergedAudioBuffer = null;
   let startTimesMs = [];
   let totalDurationMs = 0;
   let segmentTexts = [];
@@ -457,34 +572,40 @@ async function renderScriptToVideo(title, lines, bgGen) {
       }
     }
 
-    if (blobs.filter(Boolean).length === ttsChunks.length) {
+    const okBlobCount = blobs.filter(Boolean).length;
+    if (okBlobCount > 0) {
       const synced = await buildSyncedAudioStream(ttsChunks, blobs);
-      audioStream = synced.stream;
-      startPlayback = synced.startPlayback;
-      startTimesMs = synced.startTimesMs;
-      totalDurationMs = synced.totalDurationMs;
-      segmentTexts = synced.segmentTexts;
+      if (synced.mergedBuffer) {
+        mergedAudioBuffer = synced.mergedBuffer;
+        startTimesMs = synced.startTimesMs;
+        totalDurationMs = synced.totalDurationMs;
+        segmentTexts = synced.segmentTexts;
+      } else if (okBlobCount < ttsChunks.length) {
+        console.warn(`[TTS] only ${okBlobCount}/${ttsChunks.length} clips decoded`);
+      }
     }
 
-    if (!audioStream) {
-      const fb = expandTtsSegments([baseSegments.join('. ')]);
-      ttsChunks = fb.chunks;
-      logicalSegmentIndex = fb.logicalSegmentIndex;
-      const fallbackBlobs = await fetchAllTtsSegments(ttsBase, ttsChunks);
-      for (let r = 0; r < fallbackBlobs.length; r++) {
-        if (!fallbackBlobs[r]) {
-          // eslint-disable-next-line no-await-in-loop
-          fallbackBlobs[r] = await fetchTtsSegment(ttsBase, ttsChunks[r]);
+    if (!mergedAudioBuffer) {
+      const fbText = baseSegments.join('. ').trim();
+      if (fbText) {
+        const fb = expandTtsSegments([fbText]);
+        ttsChunks = fb.chunks;
+        logicalSegmentIndex = fb.logicalSegmentIndex;
+        const fallbackBlobs = await fetchAllTtsSegments(ttsBase, ttsChunks);
+        for (let r = 0; r < fallbackBlobs.length; r++) {
+          if (!fallbackBlobs[r]) {
+            // eslint-disable-next-line no-await-in-loop
+            fallbackBlobs[r] = await fetchTtsSegment(ttsBase, ttsChunks[r]);
+          }
         }
-      }
-      if (fallbackBlobs.filter(Boolean).length === ttsChunks.length) {
-        const single = await buildSyncedAudioStream(ttsChunks, fallbackBlobs);
-        if (single.stream) {
-          audioStream = single.stream;
-          startPlayback = single.startPlayback;
-          startTimesMs = single.startTimesMs;
-          totalDurationMs = single.totalDurationMs;
-          segmentTexts = single.segmentTexts;
+        if (fallbackBlobs.filter(Boolean).length > 0) {
+          const single = await buildSyncedAudioStream(ttsChunks, fallbackBlobs);
+          if (single.mergedBuffer) {
+            mergedAudioBuffer = single.mergedBuffer;
+            startTimesMs = single.startTimesMs;
+            totalDurationMs = single.totalDurationMs;
+            segmentTexts = single.segmentTexts;
+          }
         }
       }
     }
@@ -520,21 +641,18 @@ async function renderScriptToVideo(title, lines, bgGen) {
   const bgImageDataUrls = Array.isArray(bgGen?.images) ? bgGen.images : [];
   const selectedSegmentIndexes = Array.isArray(bgGen?.selectedSegmentIndexes) ? bgGen.selectedSegmentIndexes : [];
 
-  const bgImages = [];
-  for (let bi = 0; bi < bgImageDataUrls.length; bi++) {
-    const dataUrl = bgImageDataUrls[bi];
-    // eslint-disable-next-line no-await-in-loop
-    const drawable = await loadDataUrlAsDrawable(dataUrl);
-    if (drawable) {
-      bgImages.push(drawable);
-    } else {
-      console.warn('[video] Skipping unreadable background frame', bi);
-    }
-  }
-  if (bgImageDataUrls.length && !bgImages.length) {
+  const { drawables: bgImages, failed: bgDecodeFailed, total: bgDecodeTotal } =
+    await preloadBackgroundDrawables(bgImageDataUrls);
+  if (bgDecodeTotal && !bgImages.length) {
     console.warn(
       '[video] No background images could be decoded (check /api/generate-images payload size and browser limits).',
     );
+    showMessage(
+      'Images were received but the browser could not decode them. Try fewer images (MAX_BG_IMAGES) or another IMAGE_PROVIDER.',
+      'error',
+    );
+  } else if (bgDecodeFailed > 0) {
+    showMessage(`Loaded ${bgImages.length}/${bgDecodeTotal} background images.`, 'info');
   }
 
   function buildSegmentToImageIndex(segmentCount, selected) {
@@ -563,6 +681,18 @@ async function renderScriptToVideo(title, lines, bgGen) {
   );
 
   // 3) Merge canvas (video) + TTS (audio) for recording
+  let audioStream = null;
+  let startPlayback = null;
+  let audioCleanup = () => {};
+  if (mergedAudioBuffer) {
+    const playback = createRecordingAudioStream(mergedAudioBuffer, unlockedAudioCtx);
+    audioStream = playback.stream;
+    startPlayback = playback.startPlayback;
+    audioCleanup = playback.cleanup;
+  } else {
+    showMessage('TTS audio unavailable — video will be silent. Check TTS server on port 8001.', 'error');
+  }
+
   const canvasStream = canvas.captureStream(30);
   const tracks = [...canvasStream.getVideoTracks()];
   if (audioStream) {
@@ -711,11 +841,21 @@ async function renderScriptToVideo(title, lines, bgGen) {
     } else {
       recorder.stop();
       mixedStream.getTracks().forEach((t) => t.stop());
+      audioCleanup();
     }
   }
 
+  if (startPlayback) {
+    try {
+      await startPlayback();
+      // Let the audio track go live before MediaRecorder starts.
+      await new Promise((r) => setTimeout(r, 80));
+    } catch (e) {
+      console.warn('[TTS] could not start audio for recording', e?.message || e);
+      showMessage('Voice playback blocked — video may be silent. Click Generate again or allow sound.', 'error');
+    }
+  }
   recorder.start(200);
-  if (startPlayback) startPlayback();
   requestAnimationFrame(drawFrame);
 
   return new Promise((resolve) => {
@@ -838,6 +978,16 @@ async function generateVideo() {
   previewPlaceholder.classList.remove('hidden');
   previewPlaceholder.textContent = 'Generating script…';
 
+  let audioUnlockCtx = null;
+  try {
+    audioUnlockCtx = new (window.AudioContext || window.webkitAudioContext)({
+      sampleRate: TTS_MIX_SAMPLE_RATE,
+    });
+    if (audioUnlockCtx.state === 'suspended') await audioUnlockCtx.resume();
+  } catch (e) {
+    console.warn('[audio] could not unlock AudioContext on click', e?.message || e);
+  }
+
   try {
     const res = await fetch('/api/generate-video', {
       method: 'POST',
@@ -857,13 +1007,20 @@ async function generateVideo() {
     }
     setTokenUsage(data);
 
+    const ttsOk = await checkTtsServerAvailable();
+    if (!ttsOk) {
+      showMessage(
+        'TTS server is not running (port 8001). Open a terminal: cd F:\\coqui-tts-server, activate .venv, then run uvicorn server:app --host 127.0.0.1 --port 8001. Video will have no voice until it is up.',
+        'error',
+      );
+    }
+
     previewPlaceholder.textContent = 'Generating AI background images…';
-    // Generate more scene-matched images for better story continuity.
-    // Keep request size moderate to avoid proxy/network drops on huge base64 responses.
-    const desiredImages = Math.min(Math.max(data.lines.length + 1, 8), 16);
+    // One background per script segment (title + each line), up to MAX_BG_IMAGES.
+    const desiredImages = Math.min(data.lines.length + 1, MAX_BG_IMAGES);
     const bgGen = await fetchAiBackgroundImages(data.title, data.lines, desiredImages);
     previewPlaceholder.textContent = 'Rendering video… (may take a bit)';
-    currentVideoBlob = await renderScriptToVideo(data.title, data.lines, bgGen);
+    currentVideoBlob = await renderScriptToVideo(data.title, data.lines, bgGen, audioUnlockCtx);
 
     previewVideo.loop = false;
     previewVideo.src = URL.createObjectURL(currentVideoBlob);
@@ -880,6 +1037,11 @@ async function generateVideo() {
     showMessage(e.message || 'Video generation failed', 'error');
     previewPlaceholder.textContent = 'Your video will appear here.';
   } finally {
+    if (audioUnlockCtx) {
+      try {
+        await audioUnlockCtx.close();
+      } catch (_) {}
+    }
     setLoading(btnVideo, false);
   }
 }
@@ -931,7 +1093,14 @@ function approveVideo() {
   if (btnPublish) btnPublish.disabled = false;
   if (btnApproveTiktok) btnApproveTiktok.disabled = true;
   if (btnPublishTiktok) btnPublishTiktok.disabled = false;
-  showMessage('Video approved. You can publish to YouTube or TikTok, or set a publish time for YouTube.', 'success');
+  showMessage('Video approved. Bạn có thể đăng lên YouTube Shorts hoặc TikTok.', 'success');
+}
+
+async function getPreviewVideoDurationSec() {
+  const el = previewVideo;
+  if (!el || !el.src) return null;
+  const d = Number(el.duration);
+  return Number.isFinite(d) && d > 0 ? d : null;
 }
 
 async function publishToYouTube() {
@@ -943,7 +1112,14 @@ async function publishToYouTube() {
     showMessage('Please click "Approve video" after reviewing the video, before publishing.', 'error');
     return;
   }
-  btnPublish.dataset.label = 'Publish to YouTube';
+  const durationSec = await getPreviewVideoDurationSec();
+  if (durationSec != null && durationSec > 60) {
+    showMessage(
+      `Video ~${Math.round(durationSec)}s — dài hơn 60s có thể không hiện trên kệ Shorts. Vẫn đăng với #Shorts…`,
+      'info',
+    );
+  }
+  btnPublish.dataset.label = 'Đăng lên Shorts';
   setLoading(btnPublish, true);
   hideMessage();
   const form = new FormData();
@@ -952,12 +1128,14 @@ async function publishToYouTube() {
   form.append('title', ytTitle.value.trim() || 'Generated Video');
   form.append('description', ytDesc.value.trim() || '');
   form.append('privacy', ytPrivacy.value);
+  form.append('asShort', 'true');
 
   try {
     const res = await fetch('/api/youtube/upload', { method: 'POST', body: form });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || data.details || 'Upload failed');
-    showMessage(`Published! ${data.url ? `Video: ${data.url}` : ''}`, 'success');
+    const label = data.shorts ? 'Short' : 'Video';
+    showMessage(`Đã đăng ${label}! ${data.url ? data.url : ''}`, 'success');
     if (data.url) window.open(data.url, '_blank');
   } catch (e) {
     showMessage(e.message || 'Upload failed', 'error');
@@ -1000,6 +1178,7 @@ async function scheduleYouTubePublish() {
   form.append('description', ytDesc.value.trim() || '');
   form.append('privacy', 'private');
   form.append('publishAt', publishDate.toISOString());
+  form.append('asShort', 'true');
 
   try {
     const res = await fetch('/api/youtube/upload', { method: 'POST', body: form });
